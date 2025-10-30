@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Kayıtlar</title>
+  <style>
+    :root{--bg:#f0f0f0;--card:#ffffff;--muted:#666;--primary:#333;--accent:#4CAF50;--border:#ddd;--danger:#ef4444}
+    body{margin:0;font-family:Arial,system-ui,sans-serif;background:var(--bg);color:#111}
+    .navbar{background:#333;color:#fff;padding:12px 16px;display:flex;gap:14px;align-items:center;position:sticky;top:0}
+    .navbar a{color:#fff;text-decoration:none}
+    .right{margin-left:auto}
+    .wrap{max-width:1000px;margin:20px auto;padding:0 16px}
+    h1{margin:12px 0;text-align:center}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-top:16px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
+    th{background:#fafafa}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{appearance:none;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600}
+    .btn:focus{outline:none}
+    .btn-outline{background:#fff;border:1px solid var(--border)}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn[disabled]{opacity:.6;cursor:not-allowed}
+    .input{padding:8px 10px;border-radius:8px;border:1px solid var(--border);min-width:200px}
+    .muted{color:var(--muted);font-size:12px}
+    .crumbs{margin-bottom:10px;color:#444}
+    .crumbs a{color:#2c7be5;text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="navbar">
+    <a href="{{ url_for('index') }}">SimClever</a>
+    <a href="{{ url_for('index') }}">Video Stream</a>
+    <a href="{{ url_for('control_wifi') }}">Wi-Fi Ayarları</a>
+    <a href="{{ url_for('records.list_records') }}">Kayıtlar</a>
+    <div class="right">
+      {% set _user = session.get('user') or session.get('username') %}
+      {% if _user %}
+        <span>👤 {{ _user }}</span> · <a href="{{ url_for('logout') }}" style="color:#fff">Çıkış</a>
+      {% else %}
+        <a href="{{ url_for('login') }}">Giriş</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="wrap">
+    {% if current_session %}
+      <h1>{{ current_session }} — Kayıtlı Videolar</h1>
+      <div class="crumbs">
+        <a href="{{ url_for('records.list_records') }}">← Tüm Oturumlar</a>
+      </div>
+    {% else %}
+      <h1>Kayıtlı Oturumlar</h1>
+      {% if active_session %}
+        <p class="muted">Aktif oturum: <strong>{{ active_session }}</strong></p>
+      {% endif %}
+    {% endif %}
+
+    <div class="card">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <ul class="muted">
+            {% for category, message in messages %}
+              <li>{{ message }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endwith %}
+
+      {% if not current_session %}
+        {# Oturum listesi görünümü #}
+        {% if sessions %}
+          <table>
+            <thead>
+              <tr>
+                <th>Oturum</th>
+                <th>Video Sayısı</th>
+                <th>Toplam Boyut</th>
+                <th>Son Güncelleme</th>
+                <th>İşlemler</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for s in sessions %}
+                <tr>
+                  <td>
+                    <a href="{{ url_for('records.list_session', session=s.name) }}">{{ s.name }}</a>
+                    {% if active_session and s.name == active_session %}
+                      <span class="muted">(aktif)</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ s.count }}</td>
+                  <td>{{ '%.2f'|format(s.size/1048576) }} MB</td>
+                  <td>{{ s.mtime | fmt_ts }}</td>
+                  <td>
+                    <div class="actions">
+                      <a class="btn btn-outline" href="{{ url_for('records.list_session', session=s.name) }}">Görüntüle</a>
+                      <form method="post" action="{{ url_for('records.delete_session', session=s.name) }}" onsubmit="return confirm('Bu oturum ve içindeki tüm videolar silinecek. Emin misiniz?')" style="display:inline">
+                        {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+                        <button class="btn btn-danger" type="submit" {% if active_session and s.name == active_session %}disabled title="Aktif oturum silinemez"{% endif %}>Oturumu Sil</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">Henüz oturum yok.</p>
+        {% endif %}
+      {% else %}
+        {# Seçili oturum içindeki dosyalar #}
+        {% if files %}
+          <table>
+            <thead>
+              <tr>
+                <th>Dosya</th>
+                <th>Boyut</th>
+                <th>Tarih</th>
+                <th>İşlemler</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in files %}
+                <tr>
+                  <td>{{ f.name }}</td>
+                  <td>{{ '%.2f'|format(f.size/1048576) }} MB</td>
+                  <td>{{ f.mtime | fmt_ts }}</td>
+                  <td>
+                    <div class="actions">
+                      <a class="btn btn-outline" href="{{ url_for('records.download_record', session=current_session, filename=f.name) }}">İndir</a>
+                      <form method="post" action="{{ url_for('records.rename_record', session=current_session) }}" style="display:inline-flex;gap:6px;align-items:center">
+                        <input type="hidden" name="old_name" value="{{ f.name }}">
+                        <input class="input" type="text" name="new_name" placeholder="Yeni isim" required>
+                        {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+                        <button class="btn btn-outline" type="submit">Yeniden Adlandır</button>
+                      </form>
+                      <form method="post" action="{{ url_for('records.delete_record', session=current_session) }}" onsubmit="return confirm('Silinsin mi?')" style="display:inline">
+                        <input type="hidden" name="name" value="{{ f.name }}">
+                        {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+                        <button class="btn btn-danger" type="submit">Sil</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">Bu oturumda henüz kayıt yok.</p>
+        {% endif %}
+        <div class="actions" style="margin-top:12px">
+          <form method="post" action="{{ url_for('records.delete_session', session=current_session) }}" onsubmit="return confirm('Bu oturum ve içindeki tüm videolar silinecek. Emin misiniz?')" style="display:inline">
+            {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+            <button class="btn btn-danger" type="submit" {% if active_session and current_session == active_session %}disabled title="Aktif oturum silinemez"{% endif %}>Oturumu Sil</button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      {% if current_session %}
+        <p class="muted">Not: Kayıtlar GPIO 260 HIGH iken başlar, LOW olunca durur. Konum: clary/records/{{ current_session }}.</p>
+        <div class="actions">
+          <a class="btn btn-outline" href="{{ url_for('records.list_records') }}">⬅️ Tüm Oturumlar</a>
+          <a class="btn btn-outline" href="{{ url_for('index') }}">🎥 Video Akışı</a>
+        </div>
+      {% else %}
+        <p class="muted">Not: Her cihaz yeniden başlatıldığında yeni bir oturum klasörü (ör. oturum1, oturum2, …) oluşturulur. Kayıtlar ilgili oturum altında saklanır.</p>
+        <div class="actions">
+          <a class="btn btn-outline" href="{{ url_for('index') }}">🎥 Video Akışı</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

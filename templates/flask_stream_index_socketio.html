@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Video Akışı</title>
+  <style>
+    :root{--bg:#f0f0f0;--card:#ffffff;--muted:#666;--primary:#333;--accent:#4CAF50;--border:#ddd}
+    body{margin:0;font-family:Arial,system-ui,sans-serif;background:var(--bg);color:#111}
+    .navbar{background:#333;color:#fff;padding:12px 16px;display:flex;gap:14px;align-items:center;position:sticky;top:0}
+    .navbar a{color:#fff;text-decoration:none}
+    .right{margin-left:auto}
+    .wrap{max-width:900px;margin:20px auto;padding:0 16px}
+    h1,h2,h3{margin:12px 0;text-align:center}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-top:16px}
+    #video{width:100%;height:auto;border:1px solid var(--border);border-radius:8px;background:#000}
+    .status{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .row{display:flex;justify-content:space-between;align-items:center;color:var(--muted)}
+    .badge{padding:4px 10px;border-radius:999px;background:#e9e9e9;color:#111;font-size:12px}
+    .pill-ok{background:#e6ffe6}
+    .pill-down{background:#ffecec}
+    .bar{height:10px;background:#e4e4e4;border-radius:999px;overflow:hidden}
+    .bar > span{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    @media (max-width:700px){.status,.grid2{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="navbar">
+    <a href="{{ url_for('index') }}">SimClever</a>
+    <a href="{{ url_for('index') }}">Video Stream</a>
+    <a href="{{ url_for('control_wifi') }}">Wi-Fi Ayarları</a>
+    <a href="{{ url_for('records.list_records') }}">Kayıtlar</a>
+    <div class="right">
+      {% set _user = session.get('user') or session.get('username') %}
+      {% if _user %}
+        <span>👤 {{ _user }}</span> · <a href="{{ url_for('logout') }}">Çıkış</a>
+      {% else %}
+        <a href="{{ url_for('login') }}">Giriş</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="wrap">
+    <h1>Video Akışı</h1>
+
+    <div class="card">
+      <img id="video" src="{{ url_for('video_feed') }}" alt="Video akışı"/>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h3>Durum</h3>
+        <div class="row"><span>Socket.IO</span><span class="badge" id="sock_state">bağlanıyor…</span></div>
+        <div class="row"><span>Sunucu Saati</span><span class="badge" id="server_time">—</span></div>
+      </div>
+
+      <div class="card">
+        <h3>Şarj</h3>
+        <div class="row"><span>Yüzde</span><span class="badge" id="batt_text">—</span></div>
+        <div class="bar" aria-label="Şarj yüzdesi"><span id="batt_bar"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Socket.IO client -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+  <script>
+    const sockState  = document.getElementById('sock_state');
+    const serverTime = document.getElementById('server_time');
+    const battText   = document.getElementById('batt_text');
+    const battBar    = document.getElementById('batt_bar');
+
+    // /adc namespace'ine bağlan (server tarafı main.py emit: 'adc_veri': {'deger': sayi})
+    const socket = io('/adc', { transports: ['websocket','polling'] });
+
+    socket.on('connect',   ()=>{ sockState.textContent='bağlı'; sockState.className='badge pill-ok'; });
+    socket.on('disconnect',()=>{ sockState.textContent='kopuk'; sockState.className='badge pill-down'; });
+
+    socket.on('adc_veri', (payload)=>{
+      if(payload && typeof payload.deger === 'number'){
+        const val = Math.max(0, Math.min(100, Math.round(payload.deger)));
+        battText.textContent = '%' + val;
+        battBar.style.width = val + '%';
+      }
+    });
+
+    // Görsel saat
+    setInterval(()=>{ serverTime.textContent = new Date().toLocaleString(); }, 1000);
+  </script>
+</body>
+</html>

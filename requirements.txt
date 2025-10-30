@@ -1,0 +1,51 @@
+# ==================== Flask Core ====================
+Flask==3.0.3
+Werkzeug==3.0.3
+Jinja2==3.1.4
+itsdangerous==2.2.0
+click==8.1.7
+
+# ==================== Flask Extensions ====================
+Flask-SocketIO==5.3.6
+python-socketio==5.11.3
+python-engineio==4.9.1
+eventlet==0.35.2
+Flask-WTF==1.2.1
+WTForms==3.1.2
+Flask-SQLAlchemy==3.1.1
+SQLAlchemy==2.0.34
+
+# ==================== Computer Vision ====================
+numpy==1.26.4
+opencv-python==4.10.0.84
+
+# ==================== Utilities ====================
+blinker==1.7.0
+
+# ==================== GPIO Libraries (Orange Pi) ====================
+# Not: Bu paketler Orange Pi üzerinde sistem paket yöneticisi ile kurulmalıdır:
+# sudo apt-get install -y python3-libgpiod gpiod
+#
+# Alternatif GPIO kütüphaneleri (isteğe bağlı):
+# OrangePi.GPIO  # pip ile kurulamayabilir, manuel kurulum gerekebilir
+# RPi.GPIO       # Raspberry Pi uyumluluğu için
+#
+# libgpiod Python binding'i sistem paketi olarak kurulmalıdır,
+# pip ile kurulamaz. Aşağıdaki komutla kurulur:
+# sudo apt-get install -y python3-libgpiod
+
+# ==================== Kurulum Notları ====================
+# 1. Orange Pi üzerinde kurulum için:
+#    pip3 install -r requirements.txt
+#
+# 2. GPIO fonksiyonları için sistem paketleri gereklidir:
+#    sudo apt-get update
+#    sudo apt-get install -y python3-libgpiod gpiod
+#
+# 3. Kamera kullanımı için ek paketler gerekebilir:
+#    sudo apt-get install -y python3-opencv
+#
+# 4. Veritabanı için SQLite3 önceden yüklüdür (sistem paketi).
+#
+# 5. Tüm bağımlılıkları kurmak için fix_system.sh scriptini kullanabilirsiniz:
+#    sudo bash fix_system.sh

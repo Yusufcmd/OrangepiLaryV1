@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Giriş</title>
+  <style>
+    body{margin:0;font-family:Arial,sans-serif;background:#f0f0f0}
+    .wrap{max-width:420px;margin:60px auto;background:#fff;padding:20px;border-radius:8px;border:1px solid #ddd}
+    h1{text-align:center}
+    label,input{display:block;margin-bottom:10px}
+    input[type=text],input[type=password]{width:100%;padding:10px;border:1px solid #ccc;border-radius:4px;box-sizing:border-box}
+    input[type=submit]{width:100%;background:#4CAF50;color:#fff;padding:12px;border:0;border-radius:4px;cursor:pointer}
+    input[type=submit]:hover{background:#45a049}
+    .msg{margin-bottom:10px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Giriş</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="msg">
+          {% for c,m in messages %}
+            <div style="padding:8px;border-left:6px solid {{ 'green' if c=='success' else ('#888' if c=='info' else 'crimson') }};">{{ m }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    <form action="{{ url_for('login') }}" method="post" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="username">Kullanıcı adı</label>
+      <input id="username" name="username" type="text" required>
+      <label for="password">Şifre</label>
+      <input id="password" name="password" type="password" required>
+      <input type="submit" value="Giriş Yap">
+    </form>
+  </div>
+</body>
+</html>
