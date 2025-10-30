@@ -5,6 +5,12 @@
 BASE URL: http://rtclary20050.local:7447/api/v1
 TOKEN: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
+ÖNEMLİ: Tüm endpoint'ler token gerektirir!
+Token 3 şekilde gönderilebilir:
+  1. Query parameter: ?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+  2. Authorization header: Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+  3. Sadece header: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
 ================================================================================
                          KİMLİK DOĞRULAMA
 ================================================================================
@@ -116,6 +122,9 @@ TOKEN: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 9. KAYIT DURUMU SORGULA
    GET /api/v1/recording/status?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
+   Tarayıcı URL:
+   http://rtclary20050.local:7447/api/v1/recording/status?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
    Response:
    {
        "success": true,
@@ -126,17 +135,30 @@ TOKEN: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
        "resolution": [640, 480]
    }
 
-10. KAYIT BAŞLAT
-    POST /api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+10. KAYIT BAŞLAT ✅ TARAYICIDAN ERİŞİLEBİLİR
+    GET veya POST /api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
-    Response: {"success": true, "message": "Kayıt başlatıldı"}
+    Tarayıcı URL (GET):
+    http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
-    UYARI: GPIO kontrolü aktifse bu endpoint çalışmayabilir!
+    cURL (POST):
+    curl -X POST "http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
 
-11. KAYIT DURDUR
-    POST /api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+    Response: {"success": true, "message": "Kayıt başlatıldı (manuel kontrol)"}
 
-    Response: {"success": true, "message": "Kayıt durduruldu"}
+    ÖNEMLİ: Manuel kontrol modu aktifleşir ve GPIO watcher pasif hale gelir!
+    GPIO kontrolüne dönmek için sunucuyu restart edin.
+
+11. KAYIT DURDUR ✅ TARAYICIDAN ERİŞİLEBİLİR
+    GET veya POST /api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Tarayıcı URL (GET):
+    http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    cURL (POST):
+    curl -X POST "http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+    Response: {"success": true, "message": "Kayıt durduruldu (manuel kontrol)"}
 
 
 ================================================================================
@@ -145,6 +167,9 @@ TOKEN: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
 12. SİSTEM İSTATİSTİKLERİ
     GET /api/v1/system/info?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Tarayıcı URL:
+    http://rtclary20050.local:7447/api/v1/system/info?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
     Response:
     {
@@ -181,6 +206,12 @@ Aşağıdaki URL'leri tarayıcınıza yapıştırarak test edebilirsiniz:
 ✓ Token Doğrula:
   http://rtclary20050.local:7447/api/v1/auth/verify?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
+✅ KAYIT BAŞLAT (Tarayıcıdan Çalışır):
+  http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+✅ KAYIT DURDUR (Tarayıcıdan Çalışır):
+  http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
 
 ================================================================================
                     MOBİL UYGULAMA İÇİN KULLANIM
@@ -202,11 +233,28 @@ fetch('http://rtclary20050.local:7447/api/v1/sessions', {
 .then(data => console.log(data));
 ```
 
+Kayıt Başlatma Örneği:
+```javascript
+fetch('http://rtclary20050.local:7447/api/v1/recording/start', {
+    method: 'POST',
+    headers: {
+        'Authorization': 'Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3'
+    }
+})
+.then(response => response.json())
+.then(data => {
+    if (data.success) {
+        console.log('Kayıt başladı!');
+    }
+});
+```
+
 Örnek (Swift/iOS):
 ```swift
 var request = URLRequest(url: url)
 request.setValue("Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3",
                  forHTTPHeaderField: "Authorization")
+request.httpMethod = "POST"
 ```
 
 Örnek (Kotlin/Android):
@@ -214,6 +262,7 @@ request.setValue("Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3",
 val request = Request.Builder()
     .url(url)
     .addHeader("Authorization", "Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3")
+    .post(RequestBody.create(null, ByteArray(0)))
     .build()
 ```
 
@@ -228,6 +277,18 @@ curl "http://rtclary20050.local:7447/api/v1/sessions?token=ZUqwfoe1uyxZvSf2lYzH8
 # Kayıt Durumu
 curl "http://rtclary20050.local:7447/api/v1/recording/status?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
 
+# Kayıt Başlat (GET)
+curl "http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Kayıt Başlat (POST)
+curl -X POST "http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Kayıt Durdur (GET)
+curl "http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Kayıt Durdur (POST)
+curl -X POST "http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
 # Dosya İndir
 curl -O "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
 
@@ -236,12 +297,6 @@ curl -X DELETE "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi?to
 
 # Oturum Sil
 curl -X DELETE "http://rtclary20050.local:7447/api/v1/sessions/oturum3?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
-
-# Kayıt Başlat
-curl -X POST "http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
-
-# Kayıt Durdur
-curl -X POST "http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
 
 # Dosya Adı Değiştir
 curl -X POST "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi/rename?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3" \
@@ -253,20 +308,23 @@ curl -X POST "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi/rena
                     HIZLI REFERANS TABLOSU
 ================================================================================
 
-| # | METHOD | ENDPOINT                           | AÇIKLAMA                    |
-|---|--------|------------------------------------|----------------------------|
-| 1 | POST   | /api/v1/auth/login                | Giriş yap, token al        |
-| 2 | GET    | /api/v1/auth/verify               | Token doğrula              |
-| 3 | GET    | /api/v1/sessions                  | Tüm oturumları listele     |
-| 4 | GET    | /api/v1/sessions/<name>           | Oturum detayı + dosyalar   |
-| 5 | DELETE | /api/v1/sessions/<name>           | Oturum sil                 |
-| 6 | GET    | /api/v1/files/<session>/<file>    | Dosya indir                |
-| 7 | DELETE | /api/v1/files/<session>/<file>    | Dosya sil                  |
-| 8 | POST   | /api/v1/files/<s>/<f>/rename      | Dosya adını değiştir       |
-| 9 | GET    | /api/v1/recording/status          | Kayıt durumu sorgula       |
-| 10| POST   | /api/v1/recording/start           | Kaydı başlat               |
-| 11| POST   | /api/v1/recording/stop            | Kaydı durdur               |
-| 12| GET    | /api/v1/system/info               | Sistem istatistikleri      |
+| # | METHOD      | ENDPOINT                           | TARAYICI | AÇIKLAMA                    |
+|---|-------------|------------------------------------|----------|----------------------------|
+| 1 | POST        | /api/v1/auth/login                | ❌       | Giriş yap, token al        |
+| 2 | GET         | /api/v1/auth/verify               | ✅       | Token doğrula              |
+| 3 | GET         | /api/v1/sessions                  | ✅       | Tüm oturumları listele     |
+| 4 | GET         | /api/v1/sessions/<name>           | ✅       | Oturum detayı + dosyalar   |
+| 5 | DELETE      | /api/v1/sessions/<name>           | ❌       | Oturum sil                 |
+| 6 | GET         | /api/v1/files/<session>/<file>    | ✅       | Dosya indir                |
+| 7 | DELETE      | /api/v1/files/<session>/<file>    | ❌       | Dosya sil                  |
+| 8 | POST        | /api/v1/files/<s>/<f>/rename      | ❌       | Dosya adını değiştir       |
+| 9 | GET         | /api/v1/recording/status          | ✅       | Kayıt durumu sorgula       |
+| 10| GET/POST    | /api/v1/recording/start           | ✅✅     | Kaydı başlat               |
+| 11| GET/POST    | /api/v1/recording/stop            | ✅✅     | Kaydı durdur               |
+| 12| GET         | /api/v1/system/info               | ✅       | Sistem istatistikleri      |
+
+✅ = Tarayıcıdan doğrudan erişilebilir (GET metodu)
+❌ = cURL, Postman veya mobil uygulama gerekli (POST/DELETE metodu)
 
 ================================================================================
 
@@ -275,10 +333,47 @@ TOPLAM: 12 Endpoint
 Kimlik Doğrulama: 2 endpoint
 Oturum Yönetimi: 3 endpoint
 Dosya Yönetimi: 3 endpoint
-Kayıt Kontrolü: 3 endpoint
+Kayıt Kontrolü: 3 endpoint (✅ 2 tanesi tarayıcıdan çalışır!)
 Sistem Bilgisi: 1 endpoint
+
+================================================================================
+                    ÖNEMLİ NOTLAR VE İPUÇLARI
+================================================================================
+
+1. KAYIT KONTROLÜ - MANUEL MOD:
+   - /recording/start çağrıldığında MANUEL KONTROL MODU aktifleşir
+   - GPIO watcher pasif hale gelir (GPIO 260 artık etkisiz)
+   - Kayıt API üzerinden kontrol edilir
+   - GPIO kontrolüne dönmek için sunucuyu RESTART edin
+
+2. TOKEN GÜVENLİĞİ:
+   - Token URL'de görünür (query parameter)
+   - Üretim ortamında HTTPS kullanın
+   - Token'ı güvenli yerde saklayın
+
+3. TARAYICI TESTİ:
+   - GET metodları direkt tarayıcıdan çalışır
+   - POST/DELETE metodları için Postman veya cURL kullanın
+   - Tarayıcı eklentileri (REST Client) ile POST yapabilirsiniz
+
+4. HATA MESAJLARI:
+   - "Token bulunamadı" → ?token=xxx ekleyin
+   - "Token geçersiz" → Token'ı kontrol edin
+   - "Kayıt zaten aktif" → Önce /recording/stop çağırın
+   - "Kayıt modülü kullanılamıyor" → recordsVideo.py yüklenememiş
+
+5. KAYIT SÜRESİ:
+   - 2 saniyeden kısa videolar otomatik silinir
+   - MIN_VIDEO_DURATION=2.0 (environment variable)
+
+6. LOG TAKİBİ:
+   Orange Pi üzerinde:
+   tail -f logs/clary_$(date +%Y-%m-%d).log
 
 ================================================================================
                               LİSTE SONU
 ================================================================================
 
+Son Güncelleme: 2025-01-30
+Versiyon: 1.1
+Özellik: Kayıt kontrolü GET metodu eklendi, tarayıcı desteği geliştirildi
