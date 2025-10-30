@@ -28,6 +28,10 @@ app.config["SESSION_COOKIE_SECURE"] = False  # true yapabilirsiniz (HTTPS varsa)
 db = SQLAlchemy(app)
 csrf = CSRFProtect(app)
 
+# ---- SABİTLER ----
+CHANNELS_24 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161, 165]
+
 # ---- MODELLER ----
 class User(db.Model):
     id       = db.Column(db.Integer, primary_key=True)
@@ -82,10 +86,69 @@ def _sudo_install_file(tmp_path: str, dest_path: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+def hostapd_conf_path() -> str:
+    """hostapd.conf dosyasının yolunu döndür."""
+    return "/etc/hostapd/hostapd.conf"
+
+def read_ap_band_channel() -> tuple[str, int]:
+    """hostapd.conf'tan mevcut band ve kanalı oku."""
+    path = hostapd_conf_path()
+    band = "2.4"
+    ch = 6
+    if not os.path.exists(path):
+        return band, ch
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                ls = line.strip()
+                if ls.startswith("hw_mode="):
+                    mode = ls.split("=", 1)[1].strip()
+                    band = "5" if mode == "a" else "2.4"
+                elif ls.startswith("channel="):
+                    try:
+                        ch = int(ls.split("=", 1)[1].strip())
+                    except Exception:
+                        pass
+    except Exception:
         pass
     if band == "2.4" and ch not in CHANNELS_24: ch = 6
     if band == "5"   and ch not in CHANNELS_5:  ch = 36
     return band, ch
+
+def read_ap_password() -> str:
+    """hostapd.conf'tan mevcut wpa_passphrase'i oku."""
+    path = hostapd_conf_path()
+    if not os.path.exists(path):
+        return "simclever123"  # Varsayılan
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                ls = line.strip()
+                if ls.startswith("wpa_passphrase="):
+                    return ls.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return "simclever123"
+
+def restart_hostapd() -> tuple[bool, str]:
+    """hostapd servisini yeniden başlat."""
+    if not _is_posix():
+        return False, "Windows'ta desteklenmiyor"
+    try:
+        # Önce root kontrolü
+        if _is_root():
+            cmd = ["systemctl", "restart", "hostapd"]
+        elif _have_sudo_noninteractive():
+            cmd = ["sudo", "-n", "systemctl", "restart", "hostapd"]
+        else:
+            return False, "hostapd yeniden başlatma izni yok. Root veya sudoers gerekli."
+
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if p.returncode == 0:
+            return True, "hostapd yeniden başlatıldı"
+        return False, f"hostapd restart başarısız: {p.stderr or p.stdout}"
+    except Exception as e:
+        return False, f"hostapd restart hatası: {e}"
 
 def write_ap_band_channel(band: str, channel: int) -> tuple[bool, str]:
     """hostapd.conf içinde hw_mode ve channel güncelle.
@@ -114,13 +177,84 @@ def write_ap_band_channel(band: str, channel: int) -> tuple[bool, str]:
                 "wpa=2\n",
                 "wpa_passphrase=simclever123\n",
             ]
-            with open(path, "w", encoding="utf-8") as f:
-                f.writelines(base)
-        # Dosyayı oku ve satır bazlı güncelle
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+            existing = base
+        else:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                existing = f.readlines()
+
+        out_lines = _build_hostapd_updated_lines(existing, band, channel)
+        out_text = "".join(out_lines)
+        # Yazmayı atomik ve yetki dostu yap
+        ok, emsg = _atomic_write_with_sudo_fallback(path, out_text)
+        if not ok:
+            # Kullanıcıya yol gösteren daha açıklayıcı mesaj
+            hint = (
+                "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
+                "veya aşağıdaki sudoers kuralını ekleyin: \n"
+                "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"
+                "Ardından web servisini yeniden başlatın."
+            )
+            return False, f"hostapd yazılamadı ({path}): {emsg}. {hint}"
+        return True, f"Band: {band} GHz, Kanal: {channel} olarak ayarlandı"
+    except Exception as e:
+        return False, f"Beklenmeyen hata: {e}"
+
+def write_ap_password(new_password: str) -> tuple[bool, str]:
+    """hostapd.conf içinde wpa_passphrase güncelle.
+    Başarı durumunda (True, mesaj), aksi halde (False, hata).
+    """
+    # Şifre validasyonu
+    if not new_password or len(new_password) < 8:
+        return False, "Şifre en az 8 karakter olmalıdır"
+    if len(new_password) > 63:
+        return False, "Şifre en fazla 63 karakter olabilir"
+
+    path = hostapd_conf_path()
+    try:
+        if not os.path.exists(path):
+            # Basit bir başlangıç içeriği oluştur
+            pathlib.Path(os.path.dirname(path) or "/etc/hostapd").mkdir(parents=True, exist_ok=True)
+            base = [
+                "interface=wlan0\n",
+                "driver=nl80211\n",
+                "ssid=OrangePiAP\n",
+                "country_code=TR\n",
+                "wpa=2\n",
+                f"wpa_passphrase={new_password}\n",
+            ]
+            existing = base
+        else:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                existing = f.readlines()
+
+        # Şifreyi güncelle
         out = []
-        saw_mode = False; saw_chan = False
+        saw_pass = False
+        for line in existing:
+            ls = line.strip()
+            if ls.startswith("wpa_passphrase="):
+                out.append(f"wpa_passphrase={new_password}\n")
+                saw_pass = True
+            else:
+                out.append(line)
+
+        if not saw_pass:
+            out.append(f"wpa_passphrase={new_password}\n")
+
+        out_text = "".join(out)
+        ok, emsg = _atomic_write_with_sudo_fallback(path, out_text)
+        if not ok:
+            hint = (
+                "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
+                "veya aşağıdaki sudoers kuralını ekleyin: \n"
+                "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"
+                "Ardından web servisini yeniden başlatın."
+            )
+            return False, f"hostapd yazılamadı ({path}): {emsg}. {hint}"
+        return True, "Wi-Fi şifresi güncellendi"
+    except Exception as e:
+        return False, f"Beklenmeyen hata: {e}"
+
 def _build_hostapd_updated_lines(existing_lines: list[str], band: str, channel: int) -> list[str]:
     out = []
     saw_mode = False; saw_chan = False
@@ -184,16 +318,36 @@ def _atomic_write_with_sudo_fallback(dest_path: str, content: str) -> tuple[bool
             pass
         return False, f"Dosya yazma hatası: {e}"
 
+# ---- ROUTES ----
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = User.query.filter_by(username=username).first()
+        if user and verify_password(user.password, password):
+            session["uid"] = user.id
+            return redirect(url_for("index"))
+        flash("Kullanıcı adı veya şifre hatalı", "error")
+    return render_template("login_csrf.html")
 
+@app.route("/logout")
+def logout():
+    session.pop("uid", None)
+    return redirect(url_for("login"))
+
+@app.route("/")
 @login_required
 def index():
     band, ch = read_ap_band_channel()
+    current_password = read_ap_password()
     return render_template(
         "wifi_settings_simple.html",
         band=band,
         channel=ch,
         channels_24=CHANNELS_24,
         channels_5=CHANNELS_5,
+        current_password=current_password,
     )
 
 # Uygula: band/kanal yaz ve hostapd restart et
@@ -202,7 +356,8 @@ def index():
 def apply_band_channel():
     band = (request.form.get("band") or "2.4").strip()
     try:
-            # Dosya yoksa temel içerik oluştur; kalan anahtarlar korunur
+        channel = int(request.form.get("channel", "6"))
+    except Exception:
         channel = 6
     ok, msg = write_ap_band_channel(band, channel)
     if not ok:
@@ -211,20 +366,21 @@ def apply_band_channel():
     rok, rmsg = restart_hostapd()
     flash((msg + (" — " + rmsg if rmsg else "")), "success" if rok else "warning")
     return redirect(url_for("index"))
-            existing = base
-        else:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                existing = f.readlines()
-        out_lines = _build_hostapd_updated_lines(existing, band, channel)
-        out_text = "".join(out_lines)
-        # Yazmayı atomik ve yetki dostu yap
-        ok, emsg = _atomic_write_with_sudo_fallback(path, out_text)
-        if not ok:
-            # Kullanıcıya yol gösteren daha açıklayıcı mesaj
-            hint = (
-                "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
-                "veya aşağıdaki sudoers kuralını ekleyin: \n"
-                "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"
-                "Ardından web servisini yeniden başlatın."
-            )
-            return False, f"hostapd yazılamadı ({path}): {emsg}. {hint}"
+
+# Şifre değiştirme route'u
+@app.route("/apply_password", methods=["POST"])
+@login_required
+def apply_password():
+    new_password = request.form.get("password", "").strip()
+    ok, msg = write_ap_password(new_password)
+    if not ok:
+        flash(msg, "error")
+        return redirect(url_for("index"))
+    rok, rmsg = restart_hostapd()
+    flash((msg + (" — " + rmsg if rmsg else "")), "success" if rok else "warning")
+    return redirect(url_for("index"))
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+    app.run(host="0.0.0.0", port=5001, debug=True)

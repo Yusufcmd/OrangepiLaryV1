@@ -1,0 +1,284 @@
+================================================================================
+                    TÜM API ENDPOINT'LERİ LİSTESİ
+================================================================================
+
+BASE URL: http://rtclary20050.local:7447/api/v1
+TOKEN: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+================================================================================
+                         KİMLİK DOĞRULAMA
+================================================================================
+
+1. LOGIN (Token Al)
+   POST /api/v1/auth/login
+   Body: {"username": "rise", "password": "simclever12345"}
+   Response: {"success": true, "token": "ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"}
+
+2. TOKEN DOĞRULAMA
+   GET /api/v1/auth/verify?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+   Response: {"success": true, "user": {"username": "rise"}}
+
+
+================================================================================
+                         OTURUM (SESSION) YÖNETİMİ
+================================================================================
+
+3. TÜM OTURUMLARI LİSTELE
+   GET /api/v1/sessions?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response:
+   {
+       "success": true,
+       "active_session": "oturum5",
+       "sessions": [
+           {
+               "name": "oturum5",
+               "file_count": 3,
+               "total_size": 15728640,
+               "total_size_formatted": "15.00 MB",
+               "last_modified": 1698765432.123,
+               "last_modified_formatted": "2024-10-31 14:30:32"
+           }
+       ]
+   }
+
+4. OTURUM DETAYI (Dosyaları Listele)
+   GET /api/v1/sessions/<session_name>?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Örnek:
+   GET /api/v1/sessions/oturum1?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response:
+   {
+       "success": true,
+       "session": "oturum1",
+       "is_active": false,
+       "files": [
+           {
+               "name": "rec_20241031_143022.avi",
+               "size": 5242880,
+               "size_formatted": "5.00 MB",
+               "modified": 1698765422.123,
+               "modified_formatted": "2024-10-31 14:30:22",
+               "download_url": "/api/v1/files/oturum1/rec_20241031_143022.avi"
+           }
+       ]
+   }
+
+5. OTURUM SİL
+   DELETE /api/v1/sessions/<session_name>?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Örnek:
+   DELETE /api/v1/sessions/oturum3?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response: {"success": true, "message": "Oturum silindi"}
+
+   NOT: Aktif oturum silinemez!
+
+
+================================================================================
+                         DOSYA YÖNETİMİ
+================================================================================
+
+6. DOSYA İNDİR
+   GET /api/v1/files/<session_name>/<filename>?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Örnek:
+   GET /api/v1/files/oturum1/rec_20241031_143022.avi?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response: Video dosyası (binary download)
+
+7. DOSYA SİL
+   DELETE /api/v1/files/<session_name>/<filename>?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Örnek:
+   DELETE /api/v1/files/oturum1/rec_20241031_143022.avi?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response: {"success": true, "message": "Dosya silindi"}
+
+8. DOSYA ADI DEĞİŞTİR
+   POST /api/v1/files/<session_name>/<filename>/rename?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+   Body: {"new_name": "yeni_isim.avi"}
+
+   Örnek:
+   POST /api/v1/files/oturum1/rec_20241031_143022.avi/rename?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+   Body: {"new_name": "toplanti_kaydi"}
+
+   Response: {"success": true, "message": "Dosya adı değiştirildi", "new_name": "toplanti_kaydi.avi"}
+
+   NOT: .avi uzantısı otomatik eklenir
+
+
+================================================================================
+                         KAYIT KONTROLÜ
+================================================================================
+
+9. KAYIT DURUMU SORGULA
+   GET /api/v1/recording/status?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response:
+   {
+       "success": true,
+       "recording": false,
+       "current_file": null,
+       "current_session": "oturum5",
+       "fps": 18,
+       "resolution": [640, 480]
+   }
+
+10. KAYIT BAŞLAT
+    POST /api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Response: {"success": true, "message": "Kayıt başlatıldı"}
+
+    UYARI: GPIO kontrolü aktifse bu endpoint çalışmayabilir!
+
+11. KAYIT DURDUR
+    POST /api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Response: {"success": true, "message": "Kayıt durduruldu"}
+
+
+================================================================================
+                         SİSTEM BİLGİLERİ
+================================================================================
+
+12. SİSTEM İSTATİSTİKLERİ
+    GET /api/v1/system/info?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Response:
+    {
+        "success": true,
+        "system": {
+            "total_sessions": 5,
+            "total_files": 23,
+            "total_size": 157286400,
+            "total_size_formatted": "150.00 MB",
+            "records_directory": "/home/orangepi/clary/records",
+            "active_session": "oturum5"
+        }
+    }
+
+
+================================================================================
+                    TARAYICIDAN DOĞRUDAN ERİŞİM ÖRNEKLERİ
+================================================================================
+
+Aşağıdaki URL'leri tarayıcınıza yapıştırarak test edebilirsiniz:
+
+✓ Tüm Oturumları Gör:
+  http://rtclary20050.local:7447/api/v1/sessions?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+✓ Kayıt Durumunu Kontrol Et:
+  http://rtclary20050.local:7447/api/v1/recording/status?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+✓ Sistem İstatistikleri:
+  http://rtclary20050.local:7447/api/v1/system/info?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+✓ Oturum1'in Dosyaları:
+  http://rtclary20050.local:7447/api/v1/sessions/oturum1?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+✓ Token Doğrula:
+  http://rtclary20050.local:7447/api/v1/auth/verify?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+
+================================================================================
+                    MOBİL UYGULAMA İÇİN KULLANIM
+================================================================================
+
+Mobil uygulamada Authorization header kullanın:
+
+Header: Authorization: Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+Örnek (JavaScript/React Native):
+```javascript
+fetch('http://rtclary20050.local:7447/api/v1/sessions', {
+    method: 'GET',
+    headers: {
+        'Authorization': 'Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3'
+    }
+})
+.then(response => response.json())
+.then(data => console.log(data));
+```
+
+Örnek (Swift/iOS):
+```swift
+var request = URLRequest(url: url)
+request.setValue("Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3",
+                 forHTTPHeaderField: "Authorization")
+```
+
+Örnek (Kotlin/Android):
+```kotlin
+val request = Request.Builder()
+    .url(url)
+    .addHeader("Authorization", "Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3")
+    .build()
+```
+
+
+================================================================================
+                    CURL KOMUTLARI (TEST İÇİN)
+================================================================================
+
+# Tüm Oturumları Listele
+curl "http://rtclary20050.local:7447/api/v1/sessions?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Kayıt Durumu
+curl "http://rtclary20050.local:7447/api/v1/recording/status?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Dosya İndir
+curl -O "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Dosya Sil
+curl -X DELETE "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Oturum Sil
+curl -X DELETE "http://rtclary20050.local:7447/api/v1/sessions/oturum3?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Kayıt Başlat
+curl -X POST "http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Kayıt Durdur
+curl -X POST "http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+
+# Dosya Adı Değiştir
+curl -X POST "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi/rename?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3" \
+  -H "Content-Type: application/json" \
+  -d '{"new_name": "yeni_isim"}'
+
+
+================================================================================
+                    HIZLI REFERANS TABLOSU
+================================================================================
+
+| # | METHOD | ENDPOINT                           | AÇIKLAMA                    |
+|---|--------|------------------------------------|----------------------------|
+| 1 | POST   | /api/v1/auth/login                | Giriş yap, token al        |
+| 2 | GET    | /api/v1/auth/verify               | Token doğrula              |
+| 3 | GET    | /api/v1/sessions                  | Tüm oturumları listele     |
+| 4 | GET    | /api/v1/sessions/<name>           | Oturum detayı + dosyalar   |
+| 5 | DELETE | /api/v1/sessions/<name>           | Oturum sil                 |
+| 6 | GET    | /api/v1/files/<session>/<file>    | Dosya indir                |
+| 7 | DELETE | /api/v1/files/<session>/<file>    | Dosya sil                  |
+| 8 | POST   | /api/v1/files/<s>/<f>/rename      | Dosya adını değiştir       |
+| 9 | GET    | /api/v1/recording/status          | Kayıt durumu sorgula       |
+| 10| POST   | /api/v1/recording/start           | Kaydı başlat               |
+| 11| POST   | /api/v1/recording/stop            | Kaydı durdur               |
+| 12| GET    | /api/v1/system/info               | Sistem istatistikleri      |
+
+================================================================================
+
+TOPLAM: 12 Endpoint
+
+Kimlik Doğrulama: 2 endpoint
+Oturum Yönetimi: 3 endpoint
+Dosya Yönetimi: 3 endpoint
+Kayıt Kontrolü: 3 endpoint
+Sistem Bilgisi: 1 endpoint
+
+================================================================================
+                              LİSTE SONU
+================================================================================
+

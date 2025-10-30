@@ -1,0 +1,481 @@
+================================================================================
+                    MOBİL UYGULAMA REST API DOKÜMANTASYONU
+================================================================================
+
+GENEL BİLGİLER
+==============
+Bu API, mobil uygulamaların video kayıtlarına erişmesi, yönetmesi ve kayıt
+kontrolü yapması için JSON tabanlı REST endpoint'leri sağlar.
+
+Base URL: http://<sunucu-ip>:<port>/api/v1
+Varsayılan Port: 7447 (main.py'deki PORT değişkenine göre)
+
+Kimlik Doğrulama: Sabit API Token
+Content-Type: application/json
+
+SABİT API TOKEN: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+
+NEDEN REST API?
+===============
+FTP Server yerine REST API tercih edildi çünkü:
+✓ Daha güvenli (Token bazlı kimlik doğrulama)
+✓ Modern ve esnek (mobil uygulamalar için optimize)
+✓ Detaylı hata yönetimi ve status kodları
+✓ JSON formatında veri alışverişi (kolay parse edilir)
+✓ HTTPS desteği eklenebilir
+✓ Fine-grained erişim kontrolü (dosya bazlı izinler)
+✓ Kayıt başlatma/durdurma gibi kontrol özellikleri
+
+
+KURULUM ve ENTEGRASYON
+======================
+
+1. Gerekli Python paketleri zaten requirements.txt'de mevcut
+
+2. main.py dosyasına mobile_api blueprint'i zaten eklenmiştir
+
+3. Token güvenliğini artırmak için mobile_api.py içindeki API_TOKEN
+   değerini değiştirebilirsiniz (isteğe bağlı)
+
+4. Uygulamayı başlatın veya yeniden başlatın
+
+
+KİMLİK DOĞRULAMA
+================
+
+1. LOGIN - Token Alma
+   Endpoint: POST /api/v1/auth/login
+
+   Request Body:
+   {
+       "username": "rise",
+       "password": "simclever12345"
+   }
+
+   Response (200 OK):
+   {
+       "success": true,
+       "token": "ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3",
+       "user": {
+           "username": "rise"
+       }
+   }
+
+   Hata (401 Unauthorized):
+   {
+       "success": false,
+       "error": "Kullanıcı adı veya şifre hatalı"
+   }
+
+   NOT: Login yaptıktan sonra dönen token her zaman aynıdır ve süresiz geçerlidir.
+
+
+2. TOKEN DOĞRULAMA
+   Endpoint: GET /api/v1/auth/verify
+   Headers: Authorization: Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+   Response (200 OK):
+   {
+       "success": true,
+       "user": {
+           "username": "rise"
+       }
+   }
+
+
+TOKEN KULLANIMI
+===============
+Tüm API endpoint'leri (login hariç) Authorization header gerektirir:
+
+Headers:
+  Authorization: Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+Token sabittir ve süresi dolmaz. Token değeri: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+Alternatif olarak, "Bearer" prefix'i olmadan da kullanılabilir:
+  Authorization: ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+
+OTURUM YÖNETİMİ
+===============
+
+1. TÜM OTURUMLARI LİSTELE
+   Endpoint: GET /api/v1/sessions
+   Headers: Authorization: Bearer <token>
+
+   Response:
+   {
+       "success": true,
+       "active_session": "oturum5",
+       "sessions": [
+           {
+               "name": "oturum5",
+               "file_count": 3,
+               "total_size": 15728640,
+               "total_size_formatted": "15.00 MB",
+               "last_modified": 1698765432.123,
+               "last_modified_formatted": "2024-10-31 14:30:32"
+           },
+           {
+               "name": "oturum4",
+               "file_count": 5,
+               "total_size": 52428800,
+               "total_size_formatted": "50.00 MB",
+               "last_modified": 1698665432.123,
+               "last_modified_formatted": "2024-10-30 10:15:20"
+           }
+       ]
+   }
+
+
+2. OTURUM DETAYI - Dosyaları Listele
+   Endpoint: GET /api/v1/sessions/<session_name>
+   Headers: Authorization: Bearer <token>
+
+   Örnek: GET /api/v1/sessions/oturum5
+
+   Response:
+   {
+       "success": true,
+       "session": "oturum5",
+       "is_active": true,
+       "files": [
+           {
+               "name": "rec_20241031_143022.avi",
+               "size": 5242880,
+               "size_formatted": "5.00 MB",
+               "modified": 1698765422.123,
+               "modified_formatted": "2024-10-31 14:30:22",
+               "download_url": "/api/v1/files/oturum5/rec_20241031_143022.avi"
+           },
+           {
+               "name": "rec_20241031_150030.avi",
+               "size": 10485760,
+               "size_formatted": "10.00 MB",
+               "modified": 1698767230.456,
+               "modified_formatted": "2024-10-31 15:00:30",
+               "download_url": "/api/v1/files/oturum5/rec_20241031_150030.avi"
+           }
+       ]
+   }
+
+
+3. OTURUM SİL
+   Endpoint: DELETE /api/v1/sessions/<session_name>
+   Headers: Authorization: Bearer <token>
+
+   Örnek: DELETE /api/v1/sessions/oturum3
+
+   Response (200 OK):
+   {
+       "success": true,
+       "message": "Oturum silindi"
+   }
+
+   Hata (400 Bad Request):
+   {
+       "success": false,
+       "error": "Aktif oturum silinemez"
+   }
+
+   NOT: Kayıt devam eden aktif oturum silinemez!
+
+
+DOSYA YÖNETİMİ
+==============
+
+1. DOSYA İNDİR
+   Endpoint: GET /api/v1/files/<session_name>/<filename>
+   Headers: Authorization: Bearer <token>
+
+   Örnek: GET /api/v1/files/oturum5/rec_20241031_143022.avi
+
+   Response: Video dosyası (binary/octet-stream)
+   Content-Type: video/x-msvideo
+   Content-Disposition: attachment; filename="rec_20241031_143022.avi"
+
+   Mobil uygulamada dosyayı kaydetmek için:
+   - iOS: FileManager ile Documents dizinine kaydedin
+   - Android: Environment.getExternalStoragePublicDirectory(DIRECTORY_DOWNLOADS)
+
+
+2. DOSYA SİL
+   Endpoint: DELETE /api/v1/files/<session_name>/<filename>
+   Headers: Authorization: Bearer <token>
+
+   Örnek: DELETE /api/v1/files/oturum5/rec_20241031_143022.avi
+
+   Response:
+   {
+       "success": true,
+       "message": "Dosya silindi"
+   }
+
+
+3. DOSYA ADI DEĞİŞTİR
+   Endpoint: POST /api/v1/files/<session_name>/<filename>/rename
+   Headers: Authorization: Bearer <token>
+   Content-Type: application/json
+
+   Örnek: POST /api/v1/files/oturum5/rec_20241031_143022.avi/rename
+
+   Request Body:
+   {
+       "new_name": "toplanti_kaydi.avi"
+   }
+
+   Response:
+   {
+       "success": true,
+       "message": "Dosya adı değiştirildi",
+       "new_name": "toplanti_kaydi.avi"
+   }
+
+   NOT: Dosya uzantısı (.avi) otomatik eklenir
+
+
+KAYIT KONTROLÜ
+==============
+
+1. KAYIT DURUMU SORGULA
+   Endpoint: GET /api/v1/recording/status
+   Headers: Authorization: Bearer <token>
+
+   Response:
+   {
+       "success": true,
+       "recording": true,
+       "current_file": "rec_20241031_143022.avi",
+       "current_session": "oturum5",
+       "fps": 18.5,
+       "resolution": [1920, 1080]
+   }
+
+   recording: true = Kayıt devam ediyor
+   recording: false = Kayıt durmuş
+   current_file: null = Henüz dosya oluşturulmamış
+
+
+2. KAYIT BAŞLAT (Manuel Kontrol)
+   Endpoint: POST /api/v1/recording/start
+   Headers: Authorization: Bearer <token>
+
+   Response:
+   {
+       "success": true,
+       "message": "Kayıt başlatıldı"
+   }
+
+   UYARI: GPIO kontrolü aktifse bu endpoint çalışmayabilir!
+   Sistem normalde GPIO 260 pini ile kayıt kontrol edilir.
+
+
+3. KAYIT DURDUR (Manuel Kontrol)
+   Endpoint: POST /api/v1/recording/stop
+   Headers: Authorization: Bearer <token>
+
+   Response:
+   {
+       "success": true,
+       "message": "Kayıt durduruldu"
+   }
+
+
+SİSTEM BİLGİLERİ
+================
+
+Endpoint: GET /api/v1/system/info
+Headers: Authorization: Bearer <token>
+
+Response:
+{
+    "success": true,
+    "system": {
+        "total_sessions": 5,
+        "total_files": 23,
+        "total_size": 157286400,
+        "total_size_formatted": "150.00 MB",
+        "records_directory": "/home/user/OrangepiLaryV1/clary/records",
+        "active_session": "oturum5"
+    }
+}
+
+Bu endpoint toplam istatistikleri gösterir.
+
+
+HATA KODLARI ve MESAJLARI
+==========================
+
+HTTP Status Kodları:
+  200 OK - İşlem başarılı
+  400 Bad Request - Geçersiz istek veya parametreler
+  401 Unauthorized - Token geçersiz veya eksik
+  404 Not Found - Endpoint veya kaynak bulunamadı
+  500 Internal Server Error - Sunucu hatası
+
+Tüm hata yanıtları şu formattadır:
+{
+    "success": false,
+    "error": "Hata açıklaması"
+}
+
+Yaygın Hatalar:
+- "Token bulunamadı" -> Authorization header eksik
+- "Token geçersiz veya süresi dolmuş" -> Yeniden login gerekli
+- "Geçersiz oturum" -> Oturum adı hatalı veya mevcut değil
+- "Dosya bulunamadı" -> İstenen dosya silinmiş veya yok
+- "Aktif oturum silinemez" -> Kayıt devam eden oturum silinemez
+- "Kayıt modülü kullanılamıyor" -> recordsVideo modülü yüklenmemiş
+
+
+MOBİL UYGULAMA ÖRNEK AKIŞI
+===========================
+
+1. UYGULAMA BAŞLATMA:
+   a) Login endpoint'ine kullanıcı adı/şifre gönder
+   b) Dönen token'ı güvenli şekilde sakla (Keychain/SharedPreferences)
+   c) Token'ı her API çağrısında Authorization header'a ekle
+
+2. ANA EKRAN:
+   a) GET /api/v1/sessions -> Oturum listesini göster
+   b) GET /api/v1/recording/status -> Kayıt durumunu göster (canli badge)
+   c) GET /api/v1/system/info -> Toplam kullanım istatistiklerini göster
+
+3. OTURUM DETAY EKRANI:
+   a) GET /api/v1/sessions/<session_name> -> Dosya listesi
+   b) Her dosya için download/delete/rename butonları
+   c) Oturum silme butonu (aktif değilse)
+
+4. DOSYA İNDİRME:
+   a) GET /api/v1/files/<session>/<filename>
+   b) Progress bar göster (download progress)
+   c) Dosyayı cihaza kaydet
+   d) İndirme tamamlandı bildirimi
+
+5. KAYIT KONTROLÜ:
+   a) Kayıt durumunu polling ile kontrol et (her 2-3 saniye)
+   b) Manuel başlat/durdur butonları (GPIO yoksa)
+   c) Kayıt sırasında kırmızı gösterge
+
+6. TOKEN YENİLEME:
+   a) 401 hatası alındığında otomatik login sayfasına yönlendir
+   b) Token expire süresini takip et (expires_in değeri)
+   c) Expire olmadan önce yeniden login yap
+
+
+GÜVENLİK ÖNERİLERİ
+==================
+
+1. HTTPS KULLANIMI:
+   Üretim ortamında HTTPS kullanın. Nginx/Apache reverse proxy ile:
+
+   nginx örnek config:
+   location /api/ {
+       proxy_pass http://127.0.0.1:7447;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+   }
+
+2. JWT SECRET:
+   JWT_SECRET_KEY environment variable'ını mutlaka değiştirin:
+   export JWT_SECRET_KEY="$(openssl rand -base64 32)"
+
+3. RATE LIMITING:
+   Brute-force saldırılarına karşı flask-limiter ekleyin:
+   pip install flask-limiter
+
+4. CORS:
+   Sadece mobil uygulamanızın domain'ine izin verin
+
+5. TOKEN SAKLAMA:
+   - iOS: Keychain kullanın
+   - Android: EncryptedSharedPreferences kullanın
+   - Token'ı asla plain text olarak saklamayın
+
+
+TEST ETME (cURL ile)
+=====================
+
+1. Login:
+curl -X POST http://192.168.1.100:7447/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"rise","password":"simclever12345"}'
+curl -X GET http://rtclary20050.local:7447/api/v1/sessions \
+  -H "Authorization: Bearer ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3"
+2. Oturumları Listele:
+curl -X GET http://192.168.1.100:7447/api/v1/sessions \
+  -H "Authorization: Bearer <token_buraya>"
+
+3. Dosya İndir:
+curl -X GET http://192.168.1.100:7447/api/v1/files/oturum5/rec_20241031_143022.avi \
+  -H "Authorization: Bearer <token_buraya>" \
+  -o video.avi
+
+4. Kayıt Durumu:
+curl -X GET http://192.168.1.100:7447/api/v1/recording/status \
+  -H "Authorization: Bearer <token_buraya>"
+
+
+POSTMAN KULLANIMI
+=================
+
+1. Environment oluşturun:
+   - base_url: http://192.168.1.100:7447/api/v1
+   - token: (login sonrası otomatik set edilecek)
+
+2. Login Request:
+   POST {{base_url}}/auth/login
+   Body -> raw -> JSON:
+   {
+       "username": "rise",
+       "password": "simclever12345"
+   }
+
+   Tests tab'ına ekleyin (token'ı otomatik kaydetmek için):
+   pm.environment.set("token", pm.response.json().token);
+
+3. Diğer Request'ler için:
+   Authorization tab -> Type: Bearer Token
+   Token: {{token}}
+
+
+SÜRÜM BİLGİSİ
+=============
+API Version: v1
+Oluşturulma Tarihi: 2024-10-30
+Uyumlu recordsVideo.py Versiyonu: Güncel (GPIO 260 kontrollü)
+
+Son Güncelleme: 2024-10-30
+
+
+DESTEK ve SORUN GİDERME
+========================
+
+Yaygın Sorunlar:
+
+1. "recordsVideo modülü yüklenemedi"
+   Çözüm: mobile_api.py dosyasının recordsVideo.py ile aynı dizinde olduğundan emin olun
+
+2. "JWT decode hatası"
+   Çözüm: PyJWT paketini yükleyin: pip install pyjwt
+
+3. "Token geçersiz"
+   Çözüm: Sunucu yeniden başlatıldıysa eski token'lar geçersiz olur, yeniden login yapın
+
+4. API çalışmıyor
+   Çözüm: main.py'de blueprint'in register edildiğinden emin olun
+
+5. Dosya indirme çok yavaş
+   Çözüm: Chunk-based streaming kullanın, büyük dosyalar için resume desteği ekleyin
+
+
+İLETİŞİM
+========
+API ile ilgili sorularınız için sistem loglarını kontrol edin:
+  - clary_<tarih>.log dosyası
+  - mobile_api.py içindeki LOG.error() mesajları
+
+================================================================================
+                              DÖKÜMAN SONU
+================================================================================

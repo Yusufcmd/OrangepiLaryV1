@@ -25,6 +25,12 @@ import shutil
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash, send_from_directory, session
 
+# Merkezi loglama sistemi
+try:
+    import system_logger as syslog
+except Exception:
+    syslog = None
+
 # ============================ Yapılandırma ==============================
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 RECORDS_DIR = os.path.join(BASE_DIR, "clary", "records")
@@ -170,11 +176,31 @@ def _open_writer(size: Optional[tuple]=None, fps: Optional[float]=None) -> Optio
     writer = cv2.VideoWriter(path, fourcc, fps_use, size)
     if not writer or not writer.isOpened():
         LOG.error("VideoWriter açılamadı; farklı codec/uzantı deneyin.")
+        # Hata logu
+        if syslog:
+            try:
+                syslog.log_video_recording_start(SESSION_NAME or "unknown", path, size, fps_use)
+                syslog.log_system_event("VIDEO_WRITER_ERROR",
+                                      "VideoWriter açılamadı", "ERROR",
+                                      file=path, fps=fps_use, resolution=f"{size[0]}x{size[1]}")
+            except Exception:
+                pass
         return None
     WRITER_SIZE = size
     _current_file = fname
     _writer_fps = fps_use
     LOG.info(f"Kayıt başladı: {fname} @ {_writer_fps:.2f}fps {size} -> {target_dir}")
+
+    # Kayıt başlama logu
+    if syslog:
+        try:
+            syslog.log_video_recording_start(SESSION_NAME or "unknown", path, size, fps_use)
+        except Exception:
+            pass
+
+    # LED'i aç
+    _set_led(True)
+
     return writer
 
 
@@ -456,6 +482,11 @@ def _record_gpio_watcher():
 # ============================ Web Blueprint ==============================
 records_bp = Blueprint("records", __name__, url_prefix="/records")
 
+# Context processor: template'lere session erişimi ekle
+@records_bp.context_processor
+def inject_session():
+    """Template'lerde session objesine erişim sağla."""
+    return dict(session=session)
 
 def _safe_name(name: str) -> str:
     name = (name or "").strip()
@@ -568,18 +599,6 @@ def list_session(session):
     return render_template("records.html", files=files, current_session=sess, active_session=SESSION_NAME)
 
 
-@records_bp.route("/<session>/download/<path:filename>", methods=["GET"])  # indirme
-@_login_required
-def download_record(session, filename):
-    try:
-        sess = _safe_session(session)
-        filename = _safe_name(filename)
-    except Exception:
-        flash("Geçersiz dosya/oturum.", "danger")
-        return redirect(url_for("records.list_records"))
-    return send_from_directory(os.path.join(RECORDS_DIR, sess), filename, as_attachment=True)
-
-
 @records_bp.route("/<session>/rename", methods=["POST"])  # isim değiştirme
 @_login_required
 def rename_record(session):
@@ -590,6 +609,8 @@ def rename_record(session):
         return redirect(url_for("records.list_records"))
     old = request.form.get("old_name", "")
     new = request.form.get("new_name", "")
+    username = globals().get('session', {}).get("user", "Unknown")
+
     try:
         old = _safe_name(old)
         new = _safe_name(new)
@@ -601,13 +622,33 @@ def rename_record(session):
         dst = os.path.join(RECORDS_DIR, sess, new)
         if not os.path.exists(src):
             flash("Dosya bulunamadı.", "warning")
+            if syslog:
+                try:
+                    syslog.log_video_file_operation("RENAME", src, False, username, "Dosya bulunamadı")
+                except Exception:
+                    pass
         elif os.path.exists(dst):
             flash("Hedef isim zaten var.", "warning")
+            if syslog:
+                try:
+                    syslog.log_video_file_operation("RENAME", src, False, username, "Hedef isim zaten var")
+                except Exception:
+                    pass
         else:
             os.rename(src, dst)
             flash("İsim değiştirildi.", "success")
+            if syslog:
+                try:
+                    syslog.log_video_file_operation("RENAME", src, True, username, new_name=new)
+                except Exception:
+                    pass
     except Exception as e:
         flash(f"Hata: {e}", "danger")
+        if syslog:
+            try:
+                syslog.log_video_file_operation("RENAME", old, False, username, str(e))
+            except Exception:
+                pass
     return redirect(url_for("records.list_session", session=sess))
 
 
@@ -620,20 +661,44 @@ def delete_record(session):
         flash("Geçersiz oturum.", "danger")
         return redirect(url_for("records.list_records"))
     name = request.form.get("name", "")
+    username = globals().get('session', {}).get("user", "Unknown")
+
     try:
         name = _safe_name(name)
         path = os.path.join(RECORDS_DIR, sess, name)
         if os.path.exists(path):
+            # Dosya boyutunu al (log için)
+            try:
+                file_size = os.path.getsize(path)
+            except Exception:
+                file_size = None
+
             os.remove(path)
             flash("Silindi.", "success")
+
+            if syslog:
+                try:
+                    syslog.log_video_file_operation("DELETE", path, True, username)
+                except Exception:
+                    pass
         else:
             flash("Dosya bulunamadı.", "warning")
+            if syslog:
+                try:
+                    syslog.log_video_file_operation("DELETE", path, False, username, "Dosya bulunamadı")
+                except Exception:
+                    pass
     except Exception as e:
         flash(f"Hata: {e}", "danger")
+        if syslog:
+            try:
+                syslog.log_video_file_operation("DELETE", name, False, username, str(e))
+            except Exception:
+                pass
     return redirect(url_for("records.list_session", session=sess))
 
 
-@records_bp.route("/<session>/delete_session", methods=["POST"])  # oturum silme
+@records_bp.route("/<session>/delete_session", methods=["POST"])  # tüm oturumu silme
 @_login_required
 def delete_session(session):
     try:
@@ -642,28 +707,79 @@ def delete_session(session):
         flash("Geçersiz oturum.", "danger")
         return redirect(url_for("records.list_records"))
 
-    # Aktif oturum kayıt altındaysa engelle
-    try:
-        is_active = (sess == (SESSION_NAME or "")) and (_recording_flag.is_set() or (_writer is not None))
-    except Exception:
-        is_active = False
-    if is_active:
-        flash("Aktif oturum silinemez. Önce kaydı durdurun.", "warning")
-        return redirect(url_for("records.list_session", session=sess))
+    username = globals().get('session', {}).get("user", "Unknown")
 
-    target = os.path.join(RECORDS_DIR, sess)
-    if not os.path.isdir(target):
-        flash("Oturum zaten yok.", "warning")
+    # Aktif oturum kontrolü - aktif oturumu silmeye izin verme
+    if sess == SESSION_NAME:
+        flash("Aktif oturum silinemez.", "warning")
         return redirect(url_for("records.list_records"))
 
     try:
-        shutil.rmtree(target)
-        flash("Oturum ve içindeki tüm videolar silindi.", "success")
+        session_path = os.path.join(RECORDS_DIR, sess)
+
+        if not os.path.exists(session_path):
+            flash("Oturum bulunamadı.", "warning")
+            return redirect(url_for("records.list_records"))
+
+        # Oturum içindeki dosya sayısını al (log için)
+        try:
+            file_count = len([f for f in os.listdir(session_path) if os.path.isfile(os.path.join(session_path, f))])
+        except Exception:
+            file_count = 0
+
+        # Tüm oturum klasörünü sil
+        shutil.rmtree(session_path)
+        flash(f"Oturum '{sess}' ve içindeki {file_count} dosya silindi.", "success")
+
+        # Silme logu
+        if syslog:
+            try:
+                syslog.log_system_event("SESSION_DELETE",
+                                      f"Oturum silindi: {sess} ({file_count} dosya)",
+                                      "INFO",
+                                      username=username,
+                                      session_name=sess,
+                                      file_count=file_count)
+            except Exception:
+                pass
+
     except Exception as e:
-        flash(f"Silme hatası: {e}", "danger")
-        return redirect(url_for("records.list_session", session=sess))
+        flash(f"Oturum silinirken hata: {e}", "danger")
+        if syslog:
+            try:
+                syslog.log_system_event("SESSION_DELETE_ERROR",
+                                      f"Oturum silme hatası: {sess}",
+                                      "ERROR",
+                                      username=username,
+                                      session_name=sess,
+                                      error=str(e))
+            except Exception:
+                pass
 
     return redirect(url_for("records.list_records"))
+
+
+@records_bp.route("/<session>/download/<path:filename>", methods=["GET"])  # indirme
+@_login_required
+def download_record(session, filename):
+    try:
+        sess = _safe_session(session)
+        filename = _safe_name(filename)
+        username = globals().get('session', {}).get("user", "Unknown")
+        file_path = os.path.join(RECORDS_DIR, sess, filename)
+
+        # İndirme logu
+        if syslog:
+            try:
+                syslog.log_video_file_operation("DOWNLOAD", file_path, True, username)
+            except Exception:
+                pass
+
+    except Exception:
+        flash("Geçersiz dosya/oturum.", "danger")
+        return redirect(url_for("records.list_records"))
+    return send_from_directory(os.path.join(RECORDS_DIR, sess), filename, as_attachment=True)
+
 
 # ============================ Puller (video_feed tetikleyici) ============
 _puller_thread = None

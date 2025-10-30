@@ -19,6 +19,13 @@ try:
 except Exception:
     generate_csrf = None
 
+# Merkezi loglama sistemi
+try:
+    import system_logger as syslog
+except Exception as e:
+    syslog = None
+    print(f"Warning: system_logger yüklenemedi: {e}")
+
 # =========================== Flask & Eklentiler ===========================
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
@@ -54,6 +61,14 @@ try:
     app.register_blueprint(recordsVideo.records_bp)
 except Exception as _e:
     logging.getLogger(__name__).error(f"recordsVideo blueprint kaydı başarısız: {_e}")
+
+# mobile_api blueprint kaydı (REST API for mobile apps)
+try:
+    import mobile_api
+    app.register_blueprint(mobile_api.mobile_api_bp)
+    logging.getLogger(__name__).info("mobile_api blueprint başarıyla kaydedildi")
+except Exception as _e:
+    logging.getLogger(__name__).error(f"mobile_api blueprint kaydı başarısız: {_e}")
 
 @app.template_filter('fmt_ts')
 def fmt_ts(value):
@@ -327,6 +342,77 @@ def write_ap_band_channel(band: str, channel: int) -> Tuple[bool, str]:
         with open(path, "w", encoding="utf-8") as f:
             f.writelines(out)
         return True, f"AP ayarları güncellendi: band={band} channel={channel}"
+    except Exception as e:
+        return False, f"hostapd yazılamadı ({path}): {e}"
+
+
+def read_ap_password() -> str:
+    """hostapd.conf'tan mevcut wpa_passphrase'i oku."""
+    path = hostapd_conf_path()
+    if not os.path.exists(path):
+        return "simclever123"  # Varsayılan
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                ls = line.strip()
+                if ls.startswith("wpa_passphrase="):
+                    return ls.split("=", 1)[1].strip()
+    except Exception as e:
+        logger.warning(f"hostapd şifre okunamadı ({path}): {e}")
+    return "simclever123"
+
+
+def write_ap_password(new_password: str) -> Tuple[bool, str]:
+    """hostapd.conf içinde wpa_passphrase güncelle.
+    Başarı durumunda (True, mesaj), aksi halde (False, hata).
+    """
+    # Şifre validasyonu
+    if not new_password or len(new_password) < 8:
+        return False, "Şifre en az 8 karakter olmalıdır"
+    if len(new_password) > 63:
+        return False, "Şifre en fazla 63 karakter olabilir"
+
+    path = hostapd_conf_path()
+    try:
+        if not os.path.exists(path):
+            # Basit bir başlangıç içeriği oluştur
+            base = [
+                "interface=wlan0\n",
+                "driver=nl80211\n",
+                "ssid=OrangePiAP\n",
+                "country_code=TR\n",
+                "wpa=2\n",
+                f"wpa_passphrase={new_password}\n",
+            ]
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(base)
+        else:
+            # Dosyayı oku ve şifreyi güncelle
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            out = []
+            saw_pass = False
+            for line in lines:
+                ls = line.strip()
+                if ls.startswith("wpa_passphrase="):
+                    out.append(f"wpa_passphrase={new_password}\n")
+                    saw_pass = True
+                else:
+                    out.append(line)
+
+            if not saw_pass:
+                out.append(f"wpa_passphrase={new_password}\n")
+
+            # Yedek al ve yaz
+            try:
+                import shutil
+                shutil.copy2(path, path + ".bak")
+            except Exception:
+                pass
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(out)
+
+        return True, "Wi-Fi şifresi güncellendi"
     except Exception as e:
         return False, f"hostapd yazılamadı ({path}): {e}"
 
@@ -788,14 +874,34 @@ def index():
 
 @socketio.on("connect", namespace="/adc")
 def sock_connect():
-    sid = request.sid; active_connections.add(sid)
+    sid = request.sid
+    active_connections.add(sid)
     logger.info(f"SocketIO bağlandı - SID: {sid}")
+
+    # Bağlantı logu
+    if syslog:
+        try:
+            ip_addr = request.remote_addr if hasattr(request, 'remote_addr') else 'Unknown'
+            syslog.log_system_event("WEBSOCKET_CONNECT",
+                                   f"WebSocket bağlantısı kuruldu",
+                                   "INFO", sid=sid, ip_address=ip_addr)
+        except Exception:
+            pass
 
 @socketio.on("disconnect", namespace="/adc")
 def sock_disconnect():
     sid = request.sid
     if sid in active_connections: active_connections.remove(sid)
     logger.info(f"SocketIO ayrıldı - SID: {sid}")
+
+    # Bağlantı kopma logu
+    if syslog:
+        try:
+            syslog.log_system_event("WEBSOCKET_DISCONNECT",
+                                   f"WebSocket bağlantısı koptu",
+                                   "INFO", sid=sid)
+        except Exception:
+            pass
 
 @app.route("/video_feed")
 def video_feed():
@@ -811,18 +917,51 @@ def login():
         uname = request.form.get("username","").strip()
         pwd   = request.form.get("password","").strip()
         u = User.query.filter_by(username=uname).first()
+
+        # IP ve User-Agent bilgisi al
+        ip_addr = request.remote_addr
+        user_agent = request.headers.get('User-Agent', 'Unknown')
+
         if u and verify_password(u.password, pwd):
             session["uid"]  = u.id
             session["user"] = u.username
             flash("Giriş başarılı.", "success")
+
+            # Başarılı giriş logu
+            if syslog:
+                try:
+                    syslog.log_auth_attempt(uname, True, ip_addr, user_agent)
+                except Exception:
+                    pass
+
             return redirect(url_for("control_wifi"))
+
+        # Başarısız giriş logu
         flash("Hatalı kullanıcı adı/şifre.", "danger")
+        if syslog:
+            try:
+                reason = "User not found" if not u else "Wrong password"
+                syslog.log_auth_attempt(uname, False, ip_addr, user_agent, reason)
+            except Exception:
+                pass
 
     return render_template("login_csrf.html")
 
 @app.route("/logout")
 def logout():
-    session.clear(); flash("Çıkış yapıldı.", "info")
+    username = session.get("user", "Unknown")
+    ip_addr = request.remote_addr
+
+    session.clear()
+    flash("Çıkış yapıldı.", "info")
+
+    # Logout logu
+    if syslog:
+        try:
+            syslog.log_session_event(username, "LOGOUT", ip_addr)
+        except Exception:
+            pass
+
     return redirect(url_for("login"))
 
 # --- Wi-Fi ---
@@ -830,12 +969,14 @@ def logout():
 @login_required
 def control_wifi():
     band, ch = read_ap_band_channel()
+    current_password = read_ap_password()
     return render_template(
         "wifi_settings_simple.html",
         band=band,
         channel=ch,
         channels_24=CHANNELS_24,
         channels_5=CHANNELS_5,
+        current_password=current_password,
     )
 
 @app.route("/apply_band_channel", methods=["POST"])
@@ -851,6 +992,18 @@ def apply_band_channel():
         flash(msg, "danger")
         return redirect(url_for("control_wifi"))
     # Restart dene
+    rok, rmsg = restart_hostapd()
+    flash((msg + (" — " + rmsg if rmsg else "")), "success" if rok else "warning")
+    return redirect(url_for("control_wifi"))
+
+@app.route("/apply_password", methods=["POST"])
+@login_required
+def apply_password():
+    new_password = request.form.get("password", "").strip()
+    ok, msg = write_ap_password(new_password)
+    if not ok:
+        flash(msg, "danger")
+        return redirect(url_for("control_wifi"))
     rok, rmsg = restart_hostapd()
     flash((msg + (" — " + rmsg if rmsg else "")), "success" if rok else "warning")
     return redirect(url_for("control_wifi"))
