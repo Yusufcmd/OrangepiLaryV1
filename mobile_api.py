@@ -507,34 +507,40 @@ def api_recording_status():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mobile_api_bp.route("/recording/start", methods=["POST"])
+@mobile_api_bp.route("/recording/start", methods=["POST", "GET"])
 @token_required
 def api_start_recording():
     """
-    Kaydı manuel olarak başlat (GPIO yerine API ile kontrol)
-    Not: GPIO kontrolü aktifse bu endpoint çalışmayabilir
+    Kaydı manuel olarak başlat (API ile kontrol)
+    Manuel kontrol modu aktifleştirilir ve GPIO watcher pasif hale gelir
 
     Response:
     {
         "success": true,
-        "message": "Kayıt başlatıldı"
+        "message": "Kayıt başlatıldı (manuel kontrol)"
     }
     """
     try:
         if not RECORDS_MODULE_AVAILABLE:
             return jsonify({"success": False, "error": "Kayıt modülü kullanılamıyor"}), 503
 
-        if _recording_flag.is_set():
-            return jsonify({
-                "success": False,
-                "error": "Kayıt zaten aktif"
-            }), 400
+        # Manuel kontrol modunu aktifleştir
+        with recordsVideo._manual_control_mode:
+            recordsVideo._manual_control_active = True
 
-        _recording_flag.set()
+            if _recording_flag.is_set():
+                return jsonify({
+                    "success": False,
+                    "error": "Kayıt zaten aktif"
+                }), 400
+
+            _recording_flag.set()
+
+        LOG.info("API: Kayıt başlatıldı (manuel kontrol modu)")
 
         return jsonify({
             "success": True,
-            "message": "Kayıt başlatıldı"
+            "message": "Kayıt başlatıldı (manuel kontrol)"
         }), 200
 
     except Exception as e:
@@ -542,33 +548,40 @@ def api_start_recording():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@mobile_api_bp.route("/recording/stop", methods=["POST"])
+@mobile_api_bp.route("/recording/stop", methods=["POST", "GET"])
 @token_required
 def api_stop_recording():
     """
     Kaydı manuel olarak durdur
+    Manuel kontrol modu devam eder (GPIO watcher pasif kalır)
 
     Response:
     {
         "success": true,
-        "message": "Kayıt durduruldu"
+        "message": "Kayıt durduruldu (manuel kontrol)"
     }
     """
     try:
         if not RECORDS_MODULE_AVAILABLE:
             return jsonify({"success": False, "error": "Kayıt modülü kullanılamıyor"}), 503
 
-        if not _recording_flag.is_set():
-            return jsonify({
-                "success": False,
-                "error": "Kayıt zaten durmuş"
-            }), 400
+        # Manuel kontrol modunu aktifleştir (stop durumunda da)
+        with recordsVideo._manual_control_mode:
+            recordsVideo._manual_control_active = True
 
-        _recording_flag.clear()
+            if not _recording_flag.is_set():
+                return jsonify({
+                    "success": False,
+                    "error": "Kayıt zaten durmuş"
+                }), 400
+
+            _recording_flag.clear()
+
+        LOG.info("API: Kayıt durduruldu (manuel kontrol modu)")
 
         return jsonify({
             "success": True,
-            "message": "Kayıt durduruldu"
+            "message": "Kayıt durduruldu (manuel kontrol)"
         }), 200
 
     except Exception as e:

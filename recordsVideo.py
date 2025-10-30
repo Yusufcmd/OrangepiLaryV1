@@ -68,6 +68,8 @@ FRAME_SIZE = None  # son gelen gerçek frame boyutu (w,h)
 WRITER_SIZE = None  # aktif writer hedef boyutu (w,h)
 
 _recording_flag = threading.Event()
+_manual_control_mode = threading.Lock()  # Manuel kontrol aktif mi?
+_manual_control_active = False  # True ise GPIO watcher pasif
 _stop_all = threading.Event()
 _writer_lock = threading.Lock()
 _writer = None  # type: Optional[cv2.VideoWriter]
@@ -80,6 +82,10 @@ _frame_q: Queue = Queue(maxsize=int(os.environ.get("RECORD_QUEUE_MAX", "300")))
 
 # FPS ölçümü için kısa zaman geçmişi
 _ts_hist = deque(maxlen=120)
+
+# Video süresi kontrolü için (2 saniyeden kısa videoları silmek için)
+_record_start_time = None
+MIN_VIDEO_DURATION = float(os.environ.get("MIN_VIDEO_DURATION", "2.0"))  # Minimum video süresi (saniye)
 
 
 # ----------------------- Oturum klasörü yönetimi ------------------------
@@ -155,7 +161,7 @@ def _estimate_fps() -> float:
 
 def _open_writer(size: Optional[tuple]=None, fps: Optional[float]=None) -> Optional[cv2.VideoWriter]:
     """Yeni bir dosya aç ve writer döndür."""
-    global _current_file, WRITER_SIZE, _writer_fps
+    global _current_file, WRITER_SIZE, _writer_fps, _record_start_time
     if size is None:
         size = FRAME_SIZE or (640, 480)
     # FPS seçimi
@@ -189,6 +195,7 @@ def _open_writer(size: Optional[tuple]=None, fps: Optional[float]=None) -> Optio
     WRITER_SIZE = size
     _current_file = fname
     _writer_fps = fps_use
+    _record_start_time = time.time()  # Kayıt başlangıç zamanını kaydet
     LOG.info(f"Kayıt başladı: {fname} @ {_writer_fps:.2f}fps {size} -> {target_dir}")
 
     # Kayıt başlama logu
@@ -205,16 +212,55 @@ def _open_writer(size: Optional[tuple]=None, fps: Optional[float]=None) -> Optio
 
 
 def _close_writer():
-    global _writer, _current_file
+    global _writer, _current_file, _record_start_time
     try:
         if _writer is not None:
             _writer.release()
             LOG.info(f"Kayıt durdu: {_current_file}")
-    except Exception:
-        pass
+
+            # Video süresini kontrol et
+            if _record_start_time is not None and _current_file is not None:
+                duration = time.time() - _record_start_time
+
+                # 2 saniyeden kısa ise dosyayı sil
+                if duration < MIN_VIDEO_DURATION:
+                    target_dir = SESSION_DIR if SESSION_DIR else RECORDS_DIR
+                    file_path = os.path.join(target_dir, _current_file)
+
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            LOG.info(f"Kısa video silindi: {_current_file} (süre: {duration:.2f}s < {MIN_VIDEO_DURATION}s)")
+
+                            # Silme logu
+                            if syslog:
+                                try:
+                                    syslog.log_system_event("SHORT_VIDEO_DELETED",
+                                                          f"Kısa video otomatik silindi: {_current_file}",
+                                                          "INFO",
+                                                          file=_current_file,
+                                                          duration=duration,
+                                                          min_duration=MIN_VIDEO_DURATION)
+                                except Exception:
+                                    pass
+                        else:
+                            LOG.warning(f"Silinecek dosya bulunamadı: {file_path}")
+                    except Exception as e:
+                        LOG.error(f"Kısa video silinirken hata: {e}")
+                else:
+                    LOG.info(f"Video kaydedildi: {_current_file} (süre: {duration:.2f}s)")
+
+                # Kayıt süresini sıfırla
+                _record_start_time = None
+
+            # LED'i kapat
+            _set_led(False)
+    except Exception as e:
+        LOG.error(f"Writer kapatma hatası: {e}")
     finally:
         _writer = None
         _current_file = None
+        _record_start_time = None
 
 
 def _get_latest_frame():
@@ -417,6 +463,7 @@ def _event_available(line):
 
 
 def _record_gpio_watcher():
+    global _manual_control_active
     if not USE_GPIOD:
         LOG.error("gpiod yok — kayıt GPIO izleyici çalışmayacak.")
         return
@@ -434,12 +481,18 @@ def _record_gpio_watcher():
             level = line.get_value()
         except Exception:
             level = 0
-        if level == 1:
-            _recording_flag.set()
-            LOG.info("GPIO başlangıç HIGH — kayıt açık.")
-        else:
-            _recording_flag.clear()
-            LOG.info("GPIO başlangıç LOW — kayıt kapalı.")
+
+        # Manuel kontrol aktif değilse GPIO durumunu uygula
+        with _manual_control_mode:
+            if not _manual_control_active:
+                if level == 1:
+                    _recording_flag.set()
+                    LOG.info("GPIO başlangıç HIGH — kayıt açık.")
+                else:
+                    _recording_flag.clear()
+                    LOG.info("GPIO başlangıç LOW — kayıt kapalı.")
+            else:
+                LOG.info("GPIO başlangıç görmezden gelindi (manuel kontrol aktif).")
     except Exception as e:
         LOG.error(f"Kayıt GPIO açılamadı: {e}")
         return
@@ -447,11 +500,23 @@ def _record_gpio_watcher():
     try:
         last_hb = time.time()
         while not _stop_all.is_set():
+            # Manuel kontrol aktifse GPIO olaylarını görmezden gel
+            with _manual_control_mode:
+                if _manual_control_active:
+                    time.sleep(0.5)
+                    continue
+
             if _event_available(line):
                 drained = 0
                 while _event_available(line) and drained < 1024:
                     ev = line.event_read()
                     drained += 1
+
+                    # Tekrar manuel kontrol kontrolü
+                    with _manual_control_mode:
+                        if _manual_control_active:
+                            continue
+
                     if ev.type == gpiod.LineEvent.RISING_EDGE:
                         _recording_flag.set()
                         LOG.info("GPIO 260 RISING — kayıt BAŞLA")
@@ -464,7 +529,9 @@ def _record_gpio_watcher():
             now = time.time()
             if now - last_hb > 5:
                 state = "ON" if _recording_flag.is_set() else "OFF"
-                LOG.info(f"rec hb: state={state}")
+                with _manual_control_mode:
+                    mode = "MANUEL" if _manual_control_active else "GPIO"
+                LOG.info(f"rec hb: state={state}, mode={mode}")
                 last_hb = now
     except Exception as e:
         LOG.error(f"Kayıt GPIO döngü hatası: {e}")
