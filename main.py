@@ -1510,20 +1510,15 @@ def update_page():
 
 @app.route("/update_system", methods=["POST"])
 def update_system():
-    """GitHub'dan güncellemeleri çek ve clary klasörüne kopyala"""
+    """GitHub'dan güncellemeleri çek ve mevcut klasöre uygula"""
     if "uid" not in session:
         return {"success": False, "message": "Oturum gerekli"}, 401
 
     try:
         repo_url = "https://github.com/Yusufcmd/OrangepiLaryV1.git"
-        target_dir = os.path.join(BASE_DIR, "clary")
+        target_dir = BASE_DIR  # Mevcut çalışma dizini (clary alt klasörü oluşturmadan)
 
         logger.info(f"Güncelleme başlatıldı - Hedef: {target_dir}")
-
-        # clary klasörü yoksa oluştur
-        if not os.path.exists(target_dir):
-            os.makedirs(target_dir, exist_ok=True)
-            logger.info(f"clary klasörü oluşturuldu: {target_dir}")
 
         # Git safe.directory ayarını ekle (güvenlik hatası önleme)
         try:
@@ -1645,91 +1640,74 @@ def update_system():
             )
 
         else:
-            # Git deposu yok - yeni clone yap
-            logger.info("Git deposu klonlanıyor...")
+            # Git deposu yok - git init ile başlat
+            logger.info("Git deposu bulunamadı, yeni git deposu başlatılıyor...")
 
-            # Klasörde dosya varsa, önce yedekle
-            existing_files = os.listdir(target_dir) if os.path.exists(target_dir) else []
-            if existing_files:
-                logger.warning(f"Hedef klasörde {len(existing_files)} dosya var, git init ile devam ediliyor...")
+            # git init
+            init_result = subprocess.run(
+                ["git", "-C", target_dir, "init"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
 
-                # git init
-                init_result = subprocess.run(
-                    ["git", "-C", target_dir, "init"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
+            if init_result.returncode != 0:
+                raise Exception(f"git init başarısız: {init_result.stderr}")
 
-                if init_result.returncode != 0:
-                    raise Exception(f"git init başarısız: {init_result.stderr}")
+            # remote ekle
+            subprocess.run(
+                ["git", "-C", target_dir, "remote", "add", "origin", repo_url],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
 
-                # remote ekle
-                subprocess.run(
-                    ["git", "-C", target_dir, "remote", "add", "origin", repo_url],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
+            # fetch
+            fetch_result = subprocess.run(
+                ["git", "-C", target_dir, "fetch", "origin"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
 
-                # fetch
-                fetch_result = subprocess.run(
-                    ["git", "-C", target_dir, "fetch", "origin"],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
+            if fetch_result.returncode != 0:
+                raise Exception(f"git fetch başarısız: {fetch_result.stderr}")
 
-                if fetch_result.returncode != 0:
-                    raise Exception(f"git fetch başarısız: {fetch_result.stderr}")
+            # Default branch'i tespit et
+            remote_branch_check = subprocess.run(
+                ["git", "-C", target_dir, "ls-remote", "--symref", "origin", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
 
-                # Default branch'i tespit et
-                remote_branch_check = subprocess.run(
-                    ["git", "-C", target_dir, "ls-remote", "--symref", "origin", "HEAD"],
+            default_branch = "main"  # varsayılan
+            if remote_branch_check.returncode == 0:
+                for line in remote_branch_check.stdout.splitlines():
+                    if "ref: refs/heads/" in line:
+                        default_branch = line.split("refs/heads/")[1].split()[0]
+                        break
+
+            # Eğer tespit edilemezse branch'lere bak
+            if default_branch == "main":
+                branches_check = subprocess.run(
+                    ["git", "-C", target_dir, "branch", "-r"],
                     capture_output=True,
                     text=True,
                     timeout=10
                 )
+                if "origin/master" in branches_check.stdout and "origin/main" not in branches_check.stdout:
+                    default_branch = "master"
 
-                default_branch = "main"  # varsayılan
-                if remote_branch_check.returncode == 0:
-                    for line in remote_branch_check.stdout.splitlines():
-                        if "ref: refs/heads/" in line:
-                            default_branch = line.split("refs/heads/")[1].split()[0]
-                            break
+            # checkout default branch
+            checkout_result = subprocess.run(
+                ["git", "-C", target_dir, "checkout", "-B", default_branch, f"origin/{default_branch}"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
 
-                # Eğer tespit edilemezse branch'lere bak
-                if default_branch == "main":
-                    branches_check = subprocess.run(
-                        ["git", "-C", target_dir, "branch", "-r"],
-                        capture_output=True,
-                        text=True,
-                        timeout=10
-                    )
-                    if "origin/master" in branches_check.stdout and "origin/main" not in branches_check.stdout:
-                        default_branch = "master"
-
-                # checkout default branch
-                checkout_result = subprocess.run(
-                    ["git", "-C", target_dir, "checkout", "-B", default_branch, f"origin/{default_branch}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-
-                result = checkout_result
-
-            else:
-                # Boş klasör, direkt clone yap
-                parent_dir = os.path.dirname(target_dir)
-                folder_name = os.path.basename(target_dir)
-
-                result = subprocess.run(
-                    ["git", "-C", parent_dir, "clone", repo_url, folder_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
+            result = checkout_result
 
         output = result.stdout + result.stderr
         logger.info(f"Git çıktısı: {output}")
