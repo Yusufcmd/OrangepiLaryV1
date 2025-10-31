@@ -15,6 +15,7 @@ from functools import wraps
 from typing import Optional, List, Dict
 from datetime import datetime
 import json
+import socket
 
 from flask import Blueprint, request, jsonify, send_file, session
 
@@ -687,6 +688,13 @@ def api_system_info():
         # Kamera durumunu kontrol et
         camera_status = check_camera_status()
 
+        # Cihaz ismini al
+        device_name = "OrangePi-Lary"
+        try:
+            device_name = socket.gethostname()
+        except Exception:
+            pass
+
         return jsonify({
             "success": True,
             "system": {
@@ -696,7 +704,8 @@ def api_system_info():
                 "total_size_formatted": format_size(total_size),
                 "records_directory": RECORDS_DIR,
                 "active_session": SESSION_NAME,
-                "camera_status": camera_status
+                "camera_status": camera_status,
+                "device_name": device_name
             }
         }), 200
 

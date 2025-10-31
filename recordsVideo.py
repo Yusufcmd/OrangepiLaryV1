@@ -119,6 +119,10 @@ def _ensure_session_dir():
         SESSION_DIR = RECORDS_DIR
 
 
+# Modül yüklendiğinde session'ı initialize et
+_ensure_session_dir()
+
+
 def push_frame(frame):
     """Ana akıştan son kareyi paylaş. Frame kopyası alınır.
     Kayıt açıkken kare kuyruğuna (taşma olursa drop) zaman damgasıyla eklenir.
