@@ -184,6 +184,59 @@ Token 3 şekilde gönderilebilir:
         }
     }
 
+13. BATARYA DURUMU (PWM Tabanlı) 🔋
+    GET /api/v1/system/battery?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Tarayıcı URL:
+    http://rtclary20050.local:7447/api/v1/system/battery?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Response:
+    {
+        "success": true,
+        "battery": {
+            "level": 85.3,
+            "status": "good"
+        }
+    }
+
+    NOT: GPIO 76'dan PWM sinyali ile batarya seviyesi okunur (0-100 arası yüzdelik).
+    Status değerleri:
+      - "good": %80 ve üzeri
+      - "ok": %50-80 arası
+      - "low": %20-50 arası
+      - "critical": %20'nin altı
+      - "unknown": PWM okunamadı
+
+14. CİHAZ İSMİNİ GETİR 📱
+    GET /api/v1/system/device-name?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Tarayıcı URL:
+    http://rtclary20050.local:7447/api/v1/system/device-name?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+
+    Response:
+    {
+        "success": true,
+        "device_name": "rtclary20050"
+    }
+
+15. CİHAZ İSMİNİ DEĞİŞTİR 📝
+    POST /api/v1/system/device-name?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+    Body: {"device_name": "YeniCihazIsmi"}
+
+    cURL Örneği:
+    curl -X POST "http://rtclary20050.local:7447/api/v1/system/device-name?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3" \
+         -H "Content-Type: application/json" \
+         -d '{"device_name": "OrangePi-Lary-001"}'
+
+    Response:
+    {
+        "success": true,
+        "message": "Cihaz ismi değiştirildi (kalıcı olması için sistem yeniden başlatılmalı)",
+        "device_name": "OrangePi-Lary-001"
+    }
+
+    NOT: Hostname maksimum 63 karakter olabilir.
+
 
 ================================================================================
                     TARAYICIDAN DOĞRUDAN ERİŞİM ÖRNEKLERİ
@@ -200,17 +253,11 @@ Aşağıdaki URL'leri tarayıcınıza yapıştırarak test edebilirsiniz:
 ✓ Sistem İstatistikleri:
   http://rtclary20050.local:7447/api/v1/system/info?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
-✓ Oturum1'in Dosyaları:
-  http://rtclary20050.local:7447/api/v1/sessions/oturum1?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+✓ Batarya Durumu:
+  http://rtclary20050.local:7447/api/v1/system/battery?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
-✓ Token Doğrula:
-  http://rtclary20050.local:7447/api/v1/auth/verify?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
-
-✅ KAYIT BAŞLAT (Tarayıcıdan Çalışır):
-  http://rtclary20050.local:7447/api/v1/recording/start?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
-
-✅ KAYIT DURDUR (Tarayıcıdan Çalışır):
-  http://rtclary20050.local:7447/api/v1/recording/stop?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
+✓ Cihaz İsmi:
+  http://rtclary20050.local:7447/api/v1/system/device-name?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3
 
 
 ================================================================================
@@ -322,19 +369,22 @@ curl -X POST "http://rtclary20050.local:7447/api/v1/files/oturum1/video.avi/rena
 | 10| GET/POST    | /api/v1/recording/start           | ✅✅     | Kaydı başlat               |
 | 11| GET/POST    | /api/v1/recording/stop            | ✅✅     | Kaydı durdur               |
 | 12| GET         | /api/v1/system/info               | ✅       | Sistem istatistikleri      |
+| 13| GET         | /api/v1/system/battery            | ✅       | Batarya durumunu sorgula   |
+| 14| GET         | /api/v1/system/device-name        | ✅       | Cihaz ismini sorgula       |
+| 15| POST        | /api/v1/system/device-name        | ❌       | Cihaz ismini değiştir      |
 
 ✅ = Tarayıcıdan doğrudan erişilebilir (GET metodu)
 ❌ = cURL, Postman veya mobil uygulama gerekli (POST/DELETE metodu)
 
 ================================================================================
 
-TOPLAM: 12 Endpoint
+TOPLAM: 15 Endpoint
 
 Kimlik Doğrulama: 2 endpoint
 Oturum Yönetimi: 3 endpoint
 Dosya Yönetimi: 3 endpoint
 Kayıt Kontrolü: 3 endpoint (✅ 2 tanesi tarayıcıdan çalışır!)
-Sistem Bilgisi: 1 endpoint
+Sistem Bilgisi: 2 endpoint (Batarya durumu ve cihaz ismi eklendi)
 
 ================================================================================
                     ÖNEMLİ NOTLAR VE İPUÇLARI

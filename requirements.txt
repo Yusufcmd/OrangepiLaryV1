@@ -18,9 +18,11 @@ SQLAlchemy==2.0.34
 # ==================== Computer Vision ====================
 numpy==1.26.4
 opencv-python==4.10.0.84
+pyzbar==0.1.9  # QR kod okuma için
 
 # ==================== Utilities ====================
 blinker==1.7.0
+zeroconf==0.132.2  # mDNS/Bonjour broadcast için
 
 # ==================== GPIO Libraries (Orange Pi) ====================
 # Not: Bu paketler Orange Pi üzerinde sistem paket yöneticisi ile kurulmalıdır:

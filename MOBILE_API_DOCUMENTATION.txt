@@ -297,11 +297,18 @@ Response:
         "total_size": 157286400,
         "total_size_formatted": "150.00 MB",
         "records_directory": "/home/user/OrangepiLaryV1/clary/records",
-        "active_session": "oturum5"
+        "active_session": "oturum5",
+        "camera_status": "connected"
     }
 }
 
 Bu endpoint toplam istatistikleri gösterir.
+
+Kamera Durumları:
+  - "connected": Kamera bağlı ve çalışıyor
+  - "disconnected": Kamera bağlı değil
+  - "unknown": Kamera durumu bilinmiyor
+  - "error": Kamera durumu kontrol edilemedi
 
 
 HATA KODLARI ve MESAJLARI

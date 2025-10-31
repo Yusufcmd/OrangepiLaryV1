@@ -1,0 +1,105 @@
+STA↔AP script’lerini rtclary20051 için yaz
+
+# === Wi-Fi mod scriptlerini kur (STA/AP) ve gerekli son "restart"ları ekle ===
+set -euo pipefail
+
+sudo mkdir -p /opt/lscope/bin
+
+# --- STA MODE ---
+sudo tee /opt/lscope/bin/sta_mode.sh >/dev/null <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+LOG=/var/log/wifi_mode.log
+SSID="simcleverY"
+PSK="rise1234"
+
+echo "[sta_mode] $(date '+%F %T')" | tee -a "$LOG"
+systemctl disable --now hostapd dnsmasq wlan0-static.service || true
+ip addr flush dev wlan0 || true
+
+mkdir -p /etc/NetworkManager/conf.d
+if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
+  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf || true
+  [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
+fi
+
+systemctl enable --now NetworkManager
+rfkill unblock wifi || true
+nmcli radio wifi on || true
+
+if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
+else
+  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto
+fi
+
+nmcli dev wifi rescan || true
+nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
+
+# İstenen ek: işlem bitiminde NetworkManager'ı yeniden başlat
+systemctl restart NetworkManager || true
+
+echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
+SH
+
+# --- AP MODE ---
+sudo tee /opt/lscope/bin/ap_mode.sh >/dev/null <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+LOG=/var/log/wifi_mode.log
+IFACE="wlan0"
+
+echo "[ap_mode] $(date '+%F %T')" | tee -a "$LOG"
+
+# NetworkManager wlan0'ı yönetmesin
+systemctl stop NetworkManager || true
+mkdir -p /etc/NetworkManager/conf.d
+cat >/etc/NetworkManager/conf.d/unmanaged.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:${IFACE}
+EOF
+systemctl restart NetworkManager || true
+
+# hostapd.conf içeriğinde SSID/PSK'yi garanti et
+if [ -f /etc/hostapd/hostapd.conf ]; then
+  sed -i 's/^ssid=.*/ssid=rtclary20051/' /etc/hostapd/hostapd.conf || true
+  sed -i 's/^wpa_passphrase=.*/wpa_passphrase=simclever12345/' /etc/hostapd/hostapd.conf || true
+fi
+if [ -f /etc/default/hostapd ]; then
+  sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd || true
+else
+  echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' >/etc/default/hostapd
+fi
+
+systemctl unmask hostapd || true
+systemctl daemon-reload
+systemctl enable --now wlan0-static.service
+systemctl enable --now dnsmasq
+systemctl enable --now hostapd
+
+# İstenen ek: işlem bitiminde hostapd'yi yeniden başlat
+systemctl restart hostapd || true
+
+echo "[ap_mode OK] $(date '+%F %T')  (SSID: rtclary20051)" | tee -a "$LOG"
+SH
+
+# --- CRLF temizle ve çalıştırılabilir yap ---
+sudo sed -i 's/\r$//' /opt/lscope/bin/*.sh
+sudo chmod +x /opt/lscope/bin/{sta_mode.sh,ap_mode.sh}
+
+# --- /opt noexec ise: gerçek scriptleri /usr/local/sbin altına kopyala ve /opt yoluna symlink bırak ---
+if mount | grep ' /opt ' | grep -q noexec; then
+  echo "[UYARI] /opt noexec; script'leri /usr/local/sbin altına taşıyorum ve /opt yoluna symlink bırakıyorum."
+  sudo install -Dm755 /opt/lscope/bin/sta_mode.sh /usr/local/sbin/sta_mode.sh
+  sudo install -Dm755 /opt/lscope/bin/ap_mode.sh  /usr/local/sbin/ap_mode.sh
+  # /opt altındaki orijinalleri symlink'e çevir (orijinal dosyaları üzerine yaz)
+  sudo ln -sf /usr/local/sbin/sta_mode.sh /opt/lscope/bin/sta_mode.sh
+  sudo ln -sf /usr/local/sbin/ap_mode.sh  /opt/lscope/bin/ap_mode.sh
+fi
+
+echo
+echo "✅ Kurulum tamam. Kullanım:"
+echo "  STA: sudo /opt/lscope/bin/sta_mode.sh"
+echo "  AP : sudo /opt/lscope/bin/ap_mode.sh"
+echo

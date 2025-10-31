@@ -99,6 +99,43 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.2f} TB"
 
 
+def check_camera_status() -> str:
+    """
+    Kamera durumunu kontrol et
+    Returns:
+        "ok" - Kamera bağlı ve çalışıyor
+        "disconnected" - Kamera bağlı değil
+        "error" - Kamera durumu kontrol edilemedi
+    """
+    try:
+        import sys
+        # main modülünü sys.modules üzerinden bul
+        main_module = None
+        for mod_name, mod in sys.modules.items():
+            if mod_name in ('main', '__main__'):
+                if hasattr(mod, 'camera') and hasattr(mod, 'camera_lock'):
+                    main_module = mod
+                    break
+
+        if main_module:
+            # camera_lock ile güvenli erişim
+            with main_module.camera_lock:
+                camera = main_module.camera
+                if camera is not None and hasattr(camera, 'isOpened'):
+                    if camera.isOpened():
+                        return "ok"
+                    else:
+                        return "disconnected"
+                else:
+                    return "disconnected"
+        else:
+            # main modülü bulunamadıysa unknown döndür
+            return "unknown"
+    except Exception as e:
+        LOG.warning(f"Kamera durumu kontrol hatası: {e}")
+        return "error"
+
+
 # ==================== Kimlik Doğrulama Endpoint'leri ====================
 
 @mobile_api_bp.route("/auth/login", methods=["POST"])
@@ -199,7 +236,8 @@ def api_list_sessions():
                 "total_size": 15728640,
                 "total_size_formatted": "15.00 MB",
                 "last_modified": 1698765432.123,
-                "last_modified_formatted": "2024-10-31 14:30:32"
+                "last_modified_formatted": "2024-10-31 14:30:32",
+                "is_active": true
             }
         ]
     }
@@ -210,20 +248,48 @@ def api_list_sessions():
 
         sessions = _list_sessions()
 
+        # Aktif oturum adını belirle
+        active_session_name = SESSION_NAME
+
+        # Eğer SESSION_NAME None ise, en son oturumu aktif oturum olarak kabul et
+        if not active_session_name and sessions:
+            # Oturumlar zaten mtime'a göre sıralı (en yeni önce)
+            active_session_name = sessions[0]["name"]
+            LOG.info(f"SESSION_NAME None, en son oturum aktif kabul edildi: {active_session_name}")
+
+        # Aktif oturumun listede olduğundan emin ol
+        active_in_list = any(s["name"] == active_session_name for s in sessions)
+
+        if not active_in_list and active_session_name:
+            # Aktif oturumu manuel olarak ekle
+            try:
+                sess_dir = SESSION_DIR or os.path.join(RECORDS_DIR, active_session_name)
+                if os.path.exists(sess_dir):
+                    sessions.insert(0, {
+                        "name": active_session_name,
+                        "count": 0,
+                        "size": 0,
+                        "mtime": os.stat(sess_dir).st_mtime
+                    })
+            except Exception as e:
+                LOG.warning(f"Aktif oturum eklenemedi: {e}")
+
         result = []
         for s in sessions:
+            is_active = (s["name"] == active_session_name)
             result.append({
                 "name": s["name"],
                 "file_count": s["count"],
                 "total_size": s["size"],
                 "total_size_formatted": format_size(s["size"]),
                 "last_modified": s["mtime"],
-                "last_modified_formatted": datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M:%S")
+                "last_modified_formatted": datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M:%S"),
+                "is_active": is_active
             })
 
         return jsonify({
             "success": True,
-            "active_session": SESSION_NAME,
+            "active_session": active_session_name,
             "sessions": result
         }), 200
 
@@ -618,6 +684,9 @@ def api_system_info():
         total_files = sum(s["count"] for s in sessions)
         total_size = sum(s["size"] for s in sessions)
 
+        # Kamera durumunu kontrol et
+        camera_status = check_camera_status()
+
         return jsonify({
             "success": True,
             "system": {
@@ -626,12 +695,187 @@ def api_system_info():
                 "total_size": total_size,
                 "total_size_formatted": format_size(total_size),
                 "records_directory": RECORDS_DIR,
-                "active_session": SESSION_NAME
+                "active_session": SESSION_NAME,
+                "camera_status": camera_status
             }
         }), 200
 
     except Exception as e:
         LOG.error(f"Sistem bilgisi hatası: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@mobile_api_bp.route("/system/battery", methods=["GET"])
+@token_required
+def api_battery_status():
+    """
+    Cihazın batarya/şarj durumunu getir (main.py'deki batt_value kullanılır)
+
+    Response:
+    {
+        "success": true,
+        "battery": {
+            "level": 85,
+            "status": "ok"
+        }
+    }
+    """
+    try:
+        battery_info = {
+            "level": None,
+            "status": "unknown"
+        }
+
+        # Flask app context üzerinden main modülüne eriş
+        try:
+            from flask import current_app
+            import sys
+
+            # sys.modules üzerinden main modülünü bul
+            main_module = None
+            for mod_name, mod in sys.modules.items():
+                if mod_name == 'main' or mod_name == '__main__':
+                    if hasattr(mod, 'batt_value'):
+                        main_module = mod
+                        break
+
+            if main_module and hasattr(main_module, 'batt_value'):
+                batt_value = main_module.batt_value
+
+                if batt_value is not None and isinstance(batt_value, (int, float)):
+                    battery_info["level"] = float(batt_value)
+
+                    # Durum belirle
+                    if batt_value >= 80:
+                        battery_info["status"] = "good"
+                    elif batt_value >= 50:
+                        battery_info["status"] = "ok"
+                    elif batt_value >= 20:
+                        battery_info["status"] = "low"
+                    else:
+                        battery_info["status"] = "critical"
+
+                    LOG.info(f"Batarya seviyesi okundu: %{batt_value} (modül: {main_module.__name__})")
+                else:
+                    LOG.warning(f"batt_value geçersiz: {batt_value}")
+            else:
+                LOG.warning("main modülü veya batt_value bulunamadı")
+                LOG.info(f"Yüklü modüller: {[m for m in sys.modules.keys() if 'main' in m.lower()]}")
+
+        except Exception as e:
+            LOG.error(f"Batarya okuma hatası: {e}", exc_info=True)
+
+        return jsonify({
+            "success": True,
+            "battery": battery_info
+        }), 200
+
+    except Exception as e:
+        LOG.error(f"Batarya durumu hatası: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@mobile_api_bp.route("/system/device-name", methods=["GET"])
+@token_required
+def api_device_name_get():
+    """
+    Cihaz ismini getir
+
+    Response:
+    {
+        "success": true,
+        "device_name": "OrangePi-Lary-001"
+    }
+    """
+    try:
+        device_name = "OrangePi-Lary"
+
+        # Hostname'i al
+        try:
+            import socket
+            device_name = socket.gethostname()
+        except Exception:
+            pass
+
+        # Eğer hostname yoksa veya generic ise, /etc/hostname'den dene
+        if not device_name or device_name in ["localhost", "orangepi"]:
+            try:
+                if os.path.exists("/etc/hostname"):
+                    with open("/etc/hostname", 'r') as f:
+                        device_name = f.read().strip()
+            except Exception:
+                pass
+
+        return jsonify({
+            "success": True,
+            "device_name": device_name
+        }), 200
+
+    except Exception as e:
+        LOG.error(f"Cihaz ismi getirme hatası: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@mobile_api_bp.route("/system/device-name", methods=["POST"])
+@token_required
+def api_device_name_set():
+    """
+    Cihaz ismini değiştir
+
+    Request Body (JSON):
+    {
+        "device_name": "OrangePi-Lary-001"
+    }
+
+    Response:
+    {
+        "success": true,
+        "message": "Cihaz ismi değiştirildi",
+        "device_name": "OrangePi-Lary-001"
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data or "device_name" not in data:
+            return jsonify({"success": False, "error": "device_name gerekli"}), 400
+
+        new_name = data["device_name"].strip()
+
+        # İsim validasyonu
+        if not new_name or len(new_name) > 63:
+            return jsonify({"success": False, "error": "Geçersiz cihaz ismi"}), 400
+
+        # Hostname'i değiştir
+        try:
+            import subprocess
+
+            # /etc/hostname dosyasını güncelle
+            try:
+                with open("/etc/hostname", 'w') as f:
+                    f.write(new_name + "\n")
+            except Exception as e:
+                LOG.warning(f"/etc/hostname yazılamadı: {e}")
+
+            # hostname komutunu çalıştır
+            try:
+                subprocess.run(["hostname", new_name], check=True)
+            except Exception as e:
+                LOG.warning(f"hostname komutu çalıştırılamadı: {e}")
+
+            return jsonify({
+                "success": True,
+                "message": "Cihaz ismi değiştirildi (kalıcı olması için sistem yeniden başlatılmalı)",
+                "device_name": new_name
+            }), 200
+
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Cihaz ismi değiştirilemedi: {str(e)}"
+            }), 500
+
+    except Exception as e:
+        LOG.error(f"Cihaz ismi değiştirme hatası: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GPIO Recovery Monitor - ESP8266 Tabanlı - factoryctl ile
-ESP8266'dan gelen recovery sinyalini (GPIO13) dinler.
-ESP8266 butona 10 kez basıldığında PIN_RECOVERY'yi (GPIO13) 15 saniye HIGH yapar.
-Bu sinyal Orange Pi'nin bir GPIO pinine bağlanır ve factoryctl ile AP modunda recovery yapar.
+GPIO PWM Monitor - QR Kod Tabanlı WiFi Yapılandırma
+GPIO 76'dan gelen PWM sinyalini okur:
+- %75 duty cycle: Recovery moduna geçer (factoryctl ile AP modu)
+- %25 duty cycle: QR kod okuma moduna geçer ve WiFi yapılandırması yapar
 """
 
 import os
@@ -13,79 +13,207 @@ import time
 import signal
 import subprocess
 import threading
+import re
+import logging
+from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 try:
     import gpiod
 except ImportError as e:
     raise SystemExit("gpiod modülü bulunamadı. 'sudo apt install -y python3-libgpiod gpiod'") from e
 
+try:
+    import cv2
+    from pyzbar import pyzbar
+except ImportError as e:
+    print("⚠ UYARI: OpenCV veya pyzbar yüklü değil. QR okuma çalışmayacak.")
+    print("  sudo apt-get install -y python3-opencv")
+    print("  pip3 install pyzbar")
+    cv2 = None
+    pyzbar = None
+
+# Kamera kontrol sinyali için dosya yolu
+CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
+CAMERA_RELEASE_TIMEOUT = 5  # Kameranın serbest kalması için max bekleme süresi (saniye)
+
+# ==================== LOGLAMA YAPILANDIRMA ====================
+LOG_FILE = "/home/rise/clary/recoverylog/recovery.log"
+LOG_MAX_SIZE = 10 * 1024 * 1024  # 10MB
+LOG_BACKUP_COUNT = 5
+
+# Logger oluştur
+logger = logging.getLogger("PWM_QR_Monitor")
+logger.setLevel(logging.DEBUG)
+
+# Log formatı
+log_formatter = logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Konsol handler (stdout)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(log_formatter)
+logger.addHandler(console_handler)
+
+# Dosya handler (rotating file)
+try:
+    # Log dizinini oluştur
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+    file_handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=LOG_MAX_SIZE,
+        backupCount=LOG_BACKUP_COUNT
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(file_handler)
+    logger.info(f"Log dosyası: {LOG_FILE}")
+except (PermissionError, OSError) as e:
+    # Eğer /var/log'a yazamazsa, yerel dizine yaz
+    LOG_FILE = os.path.join(os.path.dirname(__file__), "pwm_qr_monitor.log")
+    try:
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=LOG_MAX_SIZE,
+            backupCount=LOG_BACKUP_COUNT
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(log_formatter)
+        logger.addHandler(file_handler)
+        logger.warning(f"/var/log'a yazılamadı, yerel log kullanılıyor: {LOG_FILE}")
+    except Exception as e2:
+        logger.error(f"Log dosyası oluşturulamadı: {e2}")
+
 # ==================== YAPILANDIRMA ====================
 GPIO_CHIP = "/dev/gpiochip1"
-GPIO_OFFSET = 76  # Orange Pi'de ESP8266'ın PIN_RECOVERY (GPIO13) bağlanacak pin
-ACTIVE_HIGH = True  # HIGH = recovery tetikle
+GPIO_OFFSET = 76  # PWM sinyali gelecek pin
+ACTIVE_HIGH = True
 
-TRIGGER_DURATION = 10.0  # 10 saniye boyunca HIGH (ESP8266 15 saniye gönderiyor)
-POLL_INTERVAL = 0.05  # 50ms polling
+# PWM ölçüm parametreleri
+PWM_SAMPLE_COUNT = 50  # PWM ölçümü için örnek sayısı
+PWM_POLL_INTERVAL = 0.001  # 1ms polling (1kHz örnekleme)
+PWM_TOLERANCE = 10  # %10 tolerans (örn: 75±10 = 65-85%)
 
-# factoryctl ile recovery
+# Duty cycle hedefleri
+DUTY_RECOVERY = 75  # %75 ± tolerans → Recovery modu
+DUTY_QR_MODE = 25   # %25 ± tolerans → QR okuma modu
+
+# Recovery için factoryctl
 FACTORYCTL_BIN = "/usr/local/sbin/factoryctl"
 FACTORY_DIR = "/opt/factory"
 
-# LED kontrolü için PI2 pini
+# QR okuma için kamera
+CAMERA_INDEX = 0  # /dev/video0
+QR_READ_TIMEOUT = 30  # 30 saniye QR okuma timeout
+
+# WiFi script yolları
+AP_MODE_SCRIPT = "/opt/lscope/bin/ap_mode.sh"
+STA_MODE_SCRIPT = "/opt/lscope/bin/sta_mode.sh"
+
+# LED kontrolü (PI2 pini)
 GPIO_LED_CHIP = "/dev/gpiochip1"
-GPIO_LED_OFFSET = 258  # PI2 pini (GPIO 258)
-LED_BLINK_INTERVAL = 0.3  # 0.3 saniye HIGH, 0.3 saniye LOW
+GPIO_LED_OFFSET = 258  # PI2 pini
+LED_BLINK_INTERVAL = 0.3
 
-# ======================================================
+# ==================== KAMERA SİNYAL FONKSİYONLARI ====================
+def signal_qr_mode_start():
+    """Main uygulamasına QR modunun başladığını bildir"""
+    try:
+        with open(CAMERA_SIGNAL_FILE, 'w') as f:
+            f.write(f"{time.time()}\nQR_MODE_ACTIVE")
+        logger.info(f"✓ QR modu sinyali gönderildi: {CAMERA_SIGNAL_FILE}")
+        return True
+    except Exception as e:
+        logger.warning(f"QR modu sinyali gönderilemedi: {e}")
+        return False
 
-# LED kontrolü için global değişkenler
-_led_line = None
-_led_chip = None
+def signal_qr_mode_end():
+    """Main uygulamasına QR modunun bittiğini bildir"""
+    try:
+        if os.path.exists(CAMERA_SIGNAL_FILE):
+            os.remove(CAMERA_SIGNAL_FILE)
+        logger.info("✓ QR modu sinyali temizlendi")
+        return True
+    except Exception as e:
+        logger.warning(f"QR modu sinyali temizlenemedi: {e}")
+        return False
+
+def wait_for_camera_release():
+    """Kameranın serbest kalmasını bekle"""
+    logger.info("Kameranın serbest kalması bekleniyor...")
+    start_time = time.time()
+
+    while (time.time() - start_time) < CAMERA_RELEASE_TIMEOUT:
+        # Kamera serbest mi kontrol et (basit bir yöntem: kısa bir süre bekle)
+        time.sleep(0.5)
+
+        # Kamerayı test et
+        try:
+            test_cap = cv2.VideoCapture(CAMERA_INDEX)
+            if test_cap.isOpened():
+                test_cap.release()
+                logger.info(f"✓ Kamera serbest (bekleme: {time.time() - start_time:.1f}s)")
+                return True
+            test_cap.release()
+        except Exception:
+            pass
+
+        time.sleep(0.5)
+
+    logger.warning(f"⚠ Kamera serbest kalma timeout ({CAMERA_RELEASE_TIMEOUT}s)")
+    return False
+
+# ==================== LED KONTROLÜ ====================
+_led_line: Optional[object] = None
+_led_chip: Optional[object] = None
 _led_blink_stop = threading.Event()
-_led_blink_thread = None
+_led_blink_thread: Optional[threading.Thread] = None
 
 def setup_led_gpio():
-    """PI2 pinini çıkış olarak ayarla (recovery LED'i için)"""
+    """LED GPIO'sunu hazırla"""
     global _led_line, _led_chip
     try:
         _led_chip = gpiod.Chip(GPIO_LED_CHIP)
         _led_line = _led_chip.get_line(GPIO_LED_OFFSET)
-        _led_line.request(consumer="recovery-led", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
-        print(f"✓ LED GPIO (PI2) hazır: {GPIO_LED_CHIP}:{GPIO_LED_OFFSET}")
+        _led_line.request(consumer="pwm-monitor-led", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
+        logger.info(f"✓ LED GPIO (PI2) hazır: {GPIO_LED_CHIP}:{GPIO_LED_OFFSET}")
         return True
     except Exception as e:
-        print(f"⚠ LED GPIO açılamadı: {e}")
+        logger.warning(f"⚠ LED GPIO açılamadı: {e}")
         return False
 
 def set_led(state: bool):
-    """LED'i aç/kapa (PI2 pini HIGH/LOW)"""
+    """LED'i aç/kapa"""
     global _led_line
-    if _led_line is None:
-        return
-    try:
-        _led_line.set_value(1 if state else 0)
-    except Exception as e:
-        print(f"LED set hatası: {e}")
+    if _led_line:
+        try:
+            _led_line.set_value(1 if state else 0)
+        except Exception as e:
+            logger.debug(f"LED set hatası: {e}")
 
 def cleanup_led_gpio():
-    """LED GPIO kaynaklarını serbest bırak"""
+    """LED GPIO kaynaklarını temizle"""
     global _led_line, _led_chip
     try:
-        if _led_line is not None:
-            _led_line.set_value(0)  # LED'i kapat
+        if _led_line:
+            _led_line.set_value(0)
             _led_line.release()
             _led_line = None
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"LED cleanup hatası: {e}")
     try:
-        if _led_chip is not None:
+        if _led_chip:
             _led_chip.close()
             _led_chip = None
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"LED chip cleanup hatası: {e}")
 
 def led_blink_loop():
-    """Recovery sırasında LED'i yanıp söndür (0.3s HIGH, 0.3s LOW)"""
+    """LED yanıp sönme döngüsü"""
     while not _led_blink_stop.is_set():
         set_led(True)
         time.sleep(LED_BLINK_INTERVAL)
@@ -93,25 +221,514 @@ def led_blink_loop():
             break
         set_led(False)
         time.sleep(LED_BLINK_INTERVAL)
-    # Döngüden çıkarken LED'i kapat
     set_led(False)
 
 def start_led_blink():
-    """LED yanıp sönme thread'ini başlat"""
+    """LED yanıp sönmeyi başlat"""
     global _led_blink_thread, _led_blink_stop
     _led_blink_stop.clear()
     _led_blink_thread = threading.Thread(target=led_blink_loop, daemon=True)
     _led_blink_thread.start()
-    print("LED yanıp sönme başladı (0.3s aralıklar)")
+    logger.debug("LED yanıp sönme başladı")
 
 def stop_led_blink():
     """LED yanıp sönmeyi durdur"""
     global _led_blink_stop
     _led_blink_stop.set()
-    if _led_blink_thread is not None:
+    if _led_blink_thread:
         _led_blink_thread.join(timeout=1.0)
     set_led(False)
+    logger.debug("LED yanıp sönme durduruldu")
 
+# ==================== PWM ÖLÇÜMÜ ====================
+def measure_pwm_duty_cycle(line, sample_count=PWM_SAMPLE_COUNT):
+    """PWM duty cycle'ı ölç (0-100 arası değer döner)"""
+    high_count = 0
+    total_count = 0
+
+    for _ in range(sample_count):
+        try:
+            value = line.get_value()
+            is_high = (value == 1) if ACTIVE_HIGH else (value == 0)
+            if is_high:
+                high_count += 1
+            total_count += 1
+            time.sleep(PWM_POLL_INTERVAL)
+        except Exception as e:
+            logger.error(f"PWM okuma hatası: {e}")
+            return None
+
+    if total_count == 0:
+        return None
+
+    duty_cycle = (high_count / total_count) * 100
+    return duty_cycle
+
+def is_duty_in_range(duty, target, tolerance=PWM_TOLERANCE):
+    """Duty cycle hedef aralıkta mı kontrol et"""
+    if duty is None:
+        return False
+    return (target - tolerance) <= duty <= (target + tolerance)
+
+# ==================== QR KOD OKUMA ====================
+def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
+    """Kameradan QR kod oku"""
+    if cv2 is None or pyzbar is None:
+        logger.error("HATA: OpenCV veya pyzbar yüklü değil!")
+        return None
+
+    # QR modu başladığını bildir
+    signal_qr_mode_start()
+
+    # Kameranın serbest kalmasını bekle
+    wait_for_camera_release()
+
+    logger.info(f"Kamera açılıyor... (Timeout: {timeout}s)")
+
+    # Birkaç kez deneme yap
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            cap = cv2.VideoCapture(CAMERA_INDEX)
+
+            if cap.isOpened():
+                logger.info(f"✓ Kamera açıldı (deneme {attempt + 1}/{max_retries})")
+                break
+
+            cap.release()
+            logger.warning(f"Kamera açılamadı, yeniden deneniyor... ({attempt + 1}/{max_retries})")
+            time.sleep(1)
+
+        except Exception as e:
+            logger.warning(f"Kamera açma hatası (deneme {attempt + 1}): {e}")
+            time.sleep(1)
+    else:
+        logger.error(f"HATA: Kamera açılamadı ({max_retries} deneme)")
+        signal_qr_mode_end()
+        return None
+
+    logger.info("✓ Kamera açıldı. QR kod bekleniyor...")
+    start_time = time.time()
+    qr_data = None
+
+    try:
+        frame_count = 0
+        while (time.time() - start_time) < timeout:
+            ret, frame = cap.read()
+            if not ret:
+                logger.warning("Kamera görüntü okuması başarısız")
+                time.sleep(0.1)
+                continue
+
+            frame_count += 1
+
+            # QR kodları tespit et
+            decoded_objects = pyzbar.decode(frame)
+
+            for obj in decoded_objects:
+                qr_data = obj.data.decode('utf-8')
+                logger.info(f"✓ QR kod okundu: {qr_data}")
+                cap.release()
+                signal_qr_mode_end()
+                # Kameranın tekrar başlaması için kısa bekleme
+                time.sleep(1)
+                return qr_data
+
+            # Her 50 frame'de bir log
+            if frame_count % 50 == 0:
+                elapsed = time.time() - start_time
+                logger.debug(f"QR aranıyor... ({frame_count} frame, {elapsed:.1f}s)")
+
+            time.sleep(0.1)  # CPU kullanımını azalt
+
+    finally:
+        cap.release()
+        logger.debug("Kamera kapatıldı")
+        signal_qr_mode_end()
+        # Kameranın tekrar başlaması için kısa bekleme
+        time.sleep(1)
+
+    logger.warning(f"⚠ Timeout: {timeout} saniye içinde QR kod okunamadı")
+    return None
+
+def parse_qr_data(qr_data):
+    """QR kod verisini parse et ve mod/parametreleri döndür"""
+    if not qr_data:
+        return None, None
+
+    logger.debug(f"QR parse ediliyor: {qr_data}")
+
+    # AP Mode: APMODE5gch36 veya APMODE2.4gch6
+    ap_pattern = r'^APMODE(5g|2\.4g)ch(\d+)$'
+    ap_match = re.match(ap_pattern, qr_data, re.IGNORECASE)
+
+    if ap_match:
+        band = ap_match.group(1).lower()
+        channel = int(ap_match.group(2))
+
+        logger.debug(f"AP Mode tespit edildi: band={band}, channel={channel}")
+
+        # Band doğrulama
+        if band == "5g":
+            hw_mode = "a"
+            valid_channels = [36, 40, 44, 48, 149, 153, 157, 161, 165]
+        elif band == "2.4g":
+            hw_mode = "g"
+            valid_channels = list(range(1, 12))  # 1-11
+        else:
+            logger.error(f"Geçersiz band: {band}")
+            return None, f"Geçersiz band: {band}"
+
+        # Kanal doğrulama
+        if channel not in valid_channels:
+            logger.error(f"Geçersiz kanal {channel} için {band} band")
+            return None, f"Geçersiz kanal {channel} için {band} band"
+
+        config = {
+            'mode': 'ap',
+            'band': band,
+            'hw_mode': hw_mode,
+            'channel': channel
+        }
+        logger.info(f"AP Mode yapılandırması: {config}")
+        return config, None
+
+    # STA Mode: WIFI:T:WPA;S:MySSID;P:MyPassword;; veya WIFI:T:WPA;S:MySSID;P:MyPassword;H:false;;
+    # Daha esnek regex - opsiyonel H parametresi ve fazladan alanları destekler
+    sta_pattern = r'^WIFI:T:([^;]+);S:([^;]+);P:([^;]+);.*;;$'
+    sta_match = re.match(sta_pattern, qr_data)
+
+    if sta_match:
+        security = sta_match.group(1)
+        ssid = sta_match.group(2)
+        password = sta_match.group(3)
+
+        logger.debug(f"STA Mode tespit edildi: SSID={ssid}, Security={security}")
+
+        config = {
+            'mode': 'sta',
+            'ssid': ssid,
+            'password': password,
+            'security': security
+        }
+        logger.info(f"STA Mode yapılandırması: SSID={ssid}, Security={security}")
+        return config, None
+
+    logger.error(f"Tanınmayan QR format: {qr_data}")
+    return None, f"Tanınmayan QR format: {qr_data}"
+
+# ==================== WiFi YAPILANDIRMA ====================
+def configure_ap_mode(band, hw_mode, channel):
+    """AP modunu yapılandır"""
+    logger.info("="*60)
+    logger.info("AP MODE YAPILANDIRMA")
+    logger.info(f"  Band: {band}")
+    logger.info(f"  HW Mode: {hw_mode}")
+    logger.info(f"  Channel: {channel}")
+    logger.info("="*60)
+
+    # hostapd.conf dosyasını güncelle
+    hostapd_conf = "/etc/hostapd/hostapd.conf"
+
+    if not os.path.exists(hostapd_conf):
+        logger.error(f"HATA: {hostapd_conf} bulunamadı!")
+        return False
+
+    try:
+        # Mevcut yapılandırmayı oku
+        logger.debug(f"{hostapd_conf} okunuyor...")
+        with open(hostapd_conf, 'r') as f:
+            config_lines = f.readlines()
+
+        # hw_mode ve channel parametrelerini güncelle
+        updated_lines = []
+        hw_mode_updated = False
+        channel_updated = False
+
+        for line in config_lines:
+            if line.strip().startswith('hw_mode='):
+                updated_lines.append(f'hw_mode={hw_mode}\n')
+                hw_mode_updated = True
+                logger.debug(f"hw_mode güncellendi: {hw_mode}")
+            elif line.strip().startswith('channel='):
+                updated_lines.append(f'channel={channel}\n')
+                channel_updated = True
+                logger.debug(f"channel güncellendi: {channel}")
+            else:
+                updated_lines.append(line)
+
+        # Eğer parametreler yoksa ekle
+        if not hw_mode_updated:
+            updated_lines.append(f'hw_mode={hw_mode}\n')
+            logger.debug(f"hw_mode eklendi: {hw_mode}")
+        if not channel_updated:
+            updated_lines.append(f'channel={channel}\n')
+            logger.debug(f"channel eklendi: {channel}")
+
+        # Geçici dosyaya yaz
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf') as tmp:
+            tmp.writelines(updated_lines)
+            tmp_path = tmp.name
+
+        logger.debug(f"Geçici dosya oluşturuldu: {tmp_path}")
+
+        # sudo ile kopyala
+        logger.debug(f"hostapd.conf güncelleniyor...")
+        result = subprocess.run(['sudo', 'cp', tmp_path, hostapd_conf],
+                              capture_output=True, text=True)
+        os.unlink(tmp_path)
+
+        if result.returncode != 0:
+            logger.error(f"hostapd.conf kopyalama hatası: {result.stderr}")
+            return False
+
+        logger.info(f"✓ {hostapd_conf} güncellendi")
+
+        # AP mode script'i çalıştır
+        if os.path.exists(AP_MODE_SCRIPT):
+            logger.info(f"AP mode script çalıştırılıyor: {AP_MODE_SCRIPT}")
+            result = subprocess.run(['sudo', AP_MODE_SCRIPT],
+                                  capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                logger.info("✓ AP modu başarıyla başlatıldı")
+                if result.stdout:
+                    logger.debug(f"Script çıktısı:\n{result.stdout}")
+                return True
+            else:
+                logger.error(f"HATA: AP mode script başarısız: {result.stderr}")
+                return False
+        else:
+            # Manuel hostapd restart
+            logger.warning("AP mode script bulunamadı, manuel restart yapılıyor...")
+            result = subprocess.run(['sudo', 'systemctl', 'restart', 'hostapd'],
+                                  capture_output=True, text=True)
+            if result.returncode == 0:
+                logger.info("✓ hostapd yeniden başlatıldı")
+                return True
+            else:
+                logger.error(f"hostapd restart hatası: {result.stderr}")
+                return False
+
+    except Exception as e:
+        logger.error(f"HATA: AP mode yapılandırma hatası: {e}", exc_info=True)
+        return False
+
+def configure_sta_mode(ssid, password):
+    """STA modunu yapılandır"""
+    logger.info("="*60)
+    logger.info("STA MODE YAPILANDIRMA")
+    logger.info(f"  SSID: {ssid}")
+    logger.info(f"  Password: {'*' * len(password)}")
+    logger.info("="*60)
+
+    try:
+        # STA mode script'i çalıştır
+        if os.path.exists(STA_MODE_SCRIPT):
+            logger.info(f"STA mode script çalıştırılıyor: {STA_MODE_SCRIPT}")
+            # Script içinde SSID ve PSK parametreleri güncellenmeli
+            # Önce script'i yeniden oluştur
+            script_content = f"""#!/usr/bin/env bash
+set -euo pipefail
+LOG=/var/log/wifi_mode.log
+SSID='{ssid}'
+PSK='{password}'
+
+echo "[sta_mode] $(date '+%F %T')" | tee -a "$LOG"
+systemctl disable --now hostapd dnsmasq wlan0-static.service || true
+ip addr flush dev wlan0 || true
+
+mkdir -p /etc/NetworkManager/conf.d
+if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
+  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf || true
+  [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
+fi
+
+systemctl enable --now NetworkManager || true
+rfkill unblock wifi || true
+nmcli radio wifi on || true
+
+if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
+else
+  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto
+fi
+
+nmcli dev wifi rescan || true
+nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
+
+systemctl restart NetworkManager || true
+
+echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
+"""
+            # Geçici dosyaya yaz ve çalıştır
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as tmp:
+                tmp.write(script_content)
+                tmp_path = tmp.name
+
+            logger.debug(f"Geçici script oluşturuldu: {tmp_path}")
+            os.chmod(tmp_path, 0o755)
+
+            logger.debug("STA mode script çalıştırılıyor...")
+            result = subprocess.run(['sudo', 'bash', tmp_path],
+                                  capture_output=True, text=True, timeout=60)
+            os.unlink(tmp_path)
+
+            if result.returncode == 0:
+                logger.info("✓ STA modu başarıyla yapılandırıldı")
+                if result.stdout:
+                    logger.debug(f"Script çıktısı:\n{result.stdout}")
+                return True
+            else:
+                logger.error(f"HATA: STA mode yapılandırma başarısız: {result.stderr}")
+                return False
+        else:
+            # NetworkManager ile doğrudan bağlan
+            logger.warning("STA mode script bulunamadı, NetworkManager kullanılıyor...")
+
+            # Hostapd'yi durdur
+            logger.debug("hostapd durduruluyor...")
+            subprocess.run(['sudo', 'systemctl', 'stop', 'hostapd'],
+                         capture_output=True, check=False)
+
+            # NetworkManager'ı başlat
+            logger.debug("NetworkManager başlatılıyor...")
+            subprocess.run(['sudo', 'systemctl', 'start', 'NetworkManager'],
+                         capture_output=True, check=True)
+
+            # WiFi bağlantısı oluştur veya güncelle
+            logger.debug(f"WiFi bağlantısı kontrol ediliyor: {ssid}")
+            result = subprocess.run(['nmcli', 'con', 'show', ssid],
+                                  capture_output=True, text=True)
+
+            if result.returncode == 0:
+                # Mevcut bağlantıyı güncelle
+                logger.debug(f"Mevcut bağlantı güncelleniyor: {ssid}")
+                subprocess.run(['sudo', 'nmcli', 'con', 'modify', ssid,
+                              'wifi-sec.psk', password], check=True)
+            else:
+                # Yeni bağlantı oluştur
+                logger.debug(f"Yeni bağlantı oluşturuluyor: {ssid}")
+                subprocess.run(['sudo', 'nmcli', 'dev', 'wifi', 'connect', ssid,
+                              'password', password], check=True)
+
+            logger.info("✓ STA modu başarıyla yapılandırıldı")
+            return True
+
+    except Exception as e:
+        logger.error(f"HATA: STA mode yapılandırma hatası: {e}", exc_info=True)
+        return False
+
+# ==================== RECOVERY MODU ====================
+def trigger_recovery():
+    """Recovery modunu tetikle (factoryctl ile)"""
+    logger.info("="*60)
+    logger.info("RECOVERY MODU TETIKLENDI - AP MODUNA GEÇİLECEK!")
+    logger.info("="*60)
+
+    start_led_blink()
+
+    try:
+        if not os.path.exists(FACTORYCTL_BIN):
+            logger.error(f"HATA: factoryctl bulunamadı: {FACTORYCTL_BIN}")
+            stop_led_blink()
+            return False
+
+        if not os.path.exists(FACTORY_DIR):
+            logger.error(f"HATA: Factory dizini bulunamadı: {FACTORY_DIR}")
+            stop_led_blink()
+            return False
+
+        logger.info(f"✓ factoryctl bulundu: {FACTORYCTL_BIN}")
+        logger.info(f"✓ Factory snapshot mevcut")
+
+        # Manifest kontrol
+        manifest_file = os.path.join(FACTORY_DIR, "MANIFEST.txt")
+        if os.path.exists(manifest_file):
+            with open(manifest_file, 'r') as f:
+                manifest = f.read().strip()
+                logger.debug(f"Factory manifest: {manifest}")
+
+        logger.warning("!!! FACTORY RESTORE BAŞLIYOR - AP MODE !!!")
+
+        time.sleep(2)
+
+        logger.info("factoryctl restore çalıştırılıyor...")
+        result = subprocess.run([FACTORYCTL_BIN, "restore", "-y", "--ap"],
+                              capture_output=True, text=True)
+
+        if result.returncode == 0:
+            logger.info("✓ Factory restore tamamlandı.")
+            if result.stdout:
+                logger.debug(f"factoryctl çıktısı:\n{result.stdout}")
+        else:
+            logger.error(f"factoryctl hatası: {result.stderr}")
+
+        stop_led_blink()
+        return result.returncode == 0
+
+    except Exception as e:
+        logger.error(f"HATA: Recovery başarısız: {e}", exc_info=True)
+        stop_led_blink()
+        return False
+
+# ==================== QR OKUMA MODU ====================
+def trigger_qr_mode():
+    """QR okuma modunu tetikle"""
+    logger.info("="*60)
+    logger.info("QR OKUMA MODU TETIKLENDI")
+    logger.info("="*60)
+
+    start_led_blink()
+
+    try:
+        # QR kod oku
+        qr_data = read_qr_code_from_camera(timeout=QR_READ_TIMEOUT)
+
+        if not qr_data:
+            logger.error("HATA: QR kod okunamadı")
+            stop_led_blink()
+            return False
+
+        # QR verisini parse et
+        config, error = parse_qr_data(qr_data)
+
+        if error:
+            logger.error(f"HATA: QR parse hatası: {error}")
+            stop_led_blink()
+            return False
+
+        if not config:
+            logger.error("HATA: Geçersiz QR verisi")
+            stop_led_blink()
+            return False
+
+        # Moda göre yapılandır
+        success = False
+        if config['mode'] == 'ap':
+            logger.info(f"AP Mode yapılandırması başlatılıyor: {config['band']} band, kanal {config['channel']}")
+            success = configure_ap_mode(config['band'], config['hw_mode'], config['channel'])
+        elif config['mode'] == 'sta':
+            logger.info(f"STA Mode yapılandırması başlatılıyor: SSID={config['ssid']}")
+            success = configure_sta_mode(config['ssid'], config['password'])
+
+        stop_led_blink()
+
+        if success:
+            logger.info(f"✓ WiFi yapılandırması başarılı ({config['mode'].upper()} mode)")
+        else:
+            logger.error(f"✗ WiFi yapılandırması başarısız")
+
+        return success
+
+    except Exception as e:
+        logger.error(f"HATA: QR okuma modu hatası: {e}", exc_info=True)
+        stop_led_blink()
+        return False
+
+# ==================== ANA DÖNGÜ ====================
 def open_chip(path):
     """GPIO chip'i aç"""
     try:
@@ -122,201 +739,115 @@ def open_chip(path):
 def request_input(chip, offset):
     """GPIO pinini input olarak ayarla"""
     line = chip.get_line(int(offset))
-    line.request(consumer="recovery-monitor", type=gpiod.LINE_REQ_DIR_IN)
+    line.request(consumer="pwm-monitor", type=gpiod.LINE_REQ_DIR_IN)
     return line
-
-def trigger_recovery():
-    """Recovery işlemini başlat - factoryctl ile AP modunda"""
-    print("\n" + "="*60)
-    print("RECOVERY TETIKLENDI - AP MODUNA GEÇİLECEK!")
-    print("="*60)
-
-    # LED yanıp sönmeyi başlat
-    start_led_blink()
-
-    try:
-        # factoryctl kontrolü
-        if not os.path.exists(FACTORYCTL_BIN):
-            print(f"HATA: factoryctl bulunamadı: {FACTORYCTL_BIN}")
-            print(f"\nfactoryctl'i kurmanız gerekiyor.")
-            stop_led_blink()
-            return False
-
-        print(f"[1/3] factoryctl bulundu: {FACTORYCTL_BIN}")
-
-        # Factory snapshot kontrolü
-        if not os.path.exists(FACTORY_DIR):
-            print(f"HATA: Factory dizini bulunamadı: {FACTORY_DIR}")
-            print(f"\nÖnce factory snapshot oluşturun:")
-            print(f"  sudo factoryctl save")
-            stop_led_blink()
-            return False
-
-        manifest_file = os.path.join(FACTORY_DIR, "MANIFEST.txt")
-        if os.path.exists(manifest_file):
-            with open(manifest_file, 'r') as f:
-                manifest_content = f.read().strip()
-            print(f"[2/3] Factory snapshot bulundu:")
-            print(f"      {manifest_content}")
-        else:
-            print(f"[2/3] Factory snapshot bulundu (manifest yok)")
-
-        print(f"[3/3] Recovery modu: AP MODE (factoryctl restore --ap)")
-
-        # Recovery başlatma bilgisi
-        print(f"\nSistem fabrika ayarlarına geri yüklenecek...")
-        print(f"Recovery sonrasında sistem AP modunda açılacak!")
-        print(f"\n!!! FACTORY RESTORE BAŞLIYOR - AP MODE !!!\n")
-
-        time.sleep(2)  # Kullanıcıya mesajı okuma fırsatı ver
-
-        # factoryctl restore ile geri yükleme (AP modunda, onay beklemeden)
-        # -y: onay beklemeden, --ap: AP modunda
-        subprocess.run([FACTORYCTL_BIN, "restore", "-y", "--ap"], check=True)
-
-        # Bu noktaya normal şartlarda ulaşılmaz (sistem reboot olur)
-        print("\n✓ Factory restore tamamlandı.")
-        stop_led_blink()
-
-    except subprocess.CalledProcessError as e:
-        print(f"\nHATA: factoryctl restore başarısız oldu: {e}")
-        stop_led_blink()
-        return False
-    except Exception as e:
-        print(f"\nHATA: Beklenmeyen hata: {e}")
-        import traceback
-        traceback.print_exc()
-        stop_led_blink()
-        return False
-
-    return True
 
 def main():
     """Ana döngü"""
-    print("="*60)
-    print("RECOVERY GPIO MONITOR - factoryctl Tabanlı")
-    print("="*60)
-    print(f"GPIO Chip: {GPIO_CHIP}")
-    print(f"GPIO Offset (Pin): {GPIO_OFFSET}")
-    print(f"Tetikleme süresi: {TRIGGER_DURATION} saniye")
-    print(f"Active HIGH: {ACTIVE_HIGH}")
-    print("-"*60)
-    print(f"factoryctl: {FACTORYCTL_BIN}")
-    print(f"Factory dizin: {FACTORY_DIR}")
-    print(f"Recovery modu: AP MODE (--ap)")
-    print("="*60)
-    print()
+    logger.info("="*60)
+    logger.info("PWM MONITOR - QR Kod Tabanlı WiFi Yapılandırma")
+    logger.info("="*60)
+    logger.info(f"GPIO Chip: {GPIO_CHIP}")
+    logger.info(f"GPIO Offset (Pin): {GPIO_OFFSET}")
+    logger.info(f"PWM Ölçüm: {PWM_SAMPLE_COUNT} örnek, {PWM_TOLERANCE}% tolerans")
+    logger.info(f"  - %{DUTY_RECOVERY}±{PWM_TOLERANCE} → Recovery Modu (factoryctl AP)")
+    logger.info(f"  - %{DUTY_QR_MODE}±{PWM_TOLERANCE} → QR Okuma Modu")
+    logger.info("="*60)
 
     # Root kontrolü
     if os.geteuid() != 0:
-        print("UYARI: Bu script root olarak çalıştırılmalı (sudo)")
+        logger.error("UYARI: Bu script root olarak çalıştırılmalı (sudo)")
         sys.exit(1)
-
-    # factoryctl kontrolü
-    if not os.path.exists(FACTORYCTL_BIN):
-        print("⚠ UYARI: factoryctl kurulu değil!")
-        print(f"\nfactoryctl'i {FACTORYCTL_BIN} konumuna kurmanız gerekiyor.")
-        print("\nYine de GPIO izlemeye başlanıyor...\n")
-    elif not os.path.exists(FACTORY_DIR):
-        print("⚠ UYARI: Factory snapshot alınmamış!")
-        print("\nLütfen önce factory snapshot oluşturun:")
-        print("  sudo factoryctl save")
-        print("\nYine de GPIO izlemeye başlanıyor...\n")
-    else:
-        print("✓ Factory snapshot hazır, recovery yapılabilir.\n")
 
     # GPIO setup
     try:
+        logger.debug("GPIO chip açılıyor...")
         chip = open_chip(GPIO_CHIP)
         line = request_input(chip, GPIO_OFFSET)
-        print(f"✓ GPIO {GPIO_OFFSET} izleniyor...")
+        logger.info(f"✓ GPIO {GPIO_OFFSET} hazır")
     except Exception as e:
-        print(f"HATA: GPIO açılamadı: {e}")
+        logger.error(f"HATA: GPIO açılamadı: {e}", exc_info=True)
         sys.exit(1)
+
+    # LED setup
+    logger.debug("LED GPIO yapılandırılıyor...")
+    setup_led_gpio()
 
     # Signal handler
     stop_flag = False
     def signal_handler(sig, frame):
         nonlocal stop_flag
-        print("\nDurdurma sinyali alındı...")
+        logger.info("Durdurma sinyali alındı...")
         stop_flag = True
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # LED setup
-    led_setup_success = setup_led_gpio()
+    logger.info("İzleme başladı. Çıkmak için Ctrl+C...")
 
-    # Monitoring loop
-    high_state = False
-    high_start_time = 0.0
-
-    print("İzleme başladı. Çıkmak için Ctrl+C...")
-    print()
+    last_trigger_time = 0
+    TRIGGER_COOLDOWN = 30  # 60 saniye soğuma süresi
 
     try:
         while not stop_flag:
             try:
-                value = line.get_value()
-                is_high = (value == 1) if ACTIVE_HIGH else (value == 0)
+                # PWM duty cycle ölç
+                duty = measure_pwm_duty_cycle(line, PWM_SAMPLE_COUNT)
 
-                if is_high:
-                    if not high_state:
-                        # HIGH durumuna geçiş
-                        high_state = True
-                        high_start_time = time.time()
-                        print(f"[{time.strftime('%H:%M:%S')}] GPIO {GPIO_OFFSET} HIGH algılandı - süre sayılıyor...")
+                if duty is not None:
+                    current_time = time.time()
+
+                    # Soğuma süresi kontrolü
+                    if (current_time - last_trigger_time) < TRIGGER_COOLDOWN:
+                        remaining = TRIGGER_COOLDOWN - (current_time - last_trigger_time)
+                        logger.info(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}% - Soğuma: {remaining:.0f}s")
+                        time.sleep(1)
+                        continue
+
+                    # Recovery modu kontrolü (%75)
+                    if is_duty_in_range(duty, DUTY_RECOVERY, PWM_TOLERANCE):
+                        logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → RECOVERY MODU")
+                        success = trigger_recovery()
+                        last_trigger_time = time.time()
+                        if success:
+                            logger.info("Recovery modu başarıyla tamamlandı")
+                        else:
+                            logger.error("Recovery modu başarısız oldu")
+
+                    # QR okuma modu kontrolü (%25)
+                    elif is_duty_in_range(duty, DUTY_QR_MODE, PWM_TOLERANCE):
+                        logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → QR OKUMA MODU")
+                        success = trigger_qr_mode()
+                        last_trigger_time = time.time()
+                        if success:
+                            logger.info("QR okuma modu başarıyla tamamlandı")
+                        else:
+                            logger.error("QR okuma modu başarısız oldu")
+
                     else:
-                        # HIGH durumu devam ediyor
-                        elapsed = time.time() - high_start_time
-
-                        # Her saniye güncelleme göster
-                        if int(elapsed) != int(elapsed - POLL_INTERVAL):
-                            remaining = TRIGGER_DURATION - elapsed
-                            if remaining > 0:
-                                print(f"  → HIGH süresi: {elapsed:.1f}s / {TRIGGER_DURATION}s (kalan: {remaining:.1f}s)")
-
-                        # Tetikleme süresine ulaşıldı mı?
-                        if elapsed >= TRIGGER_DURATION:
-                            print()
-                            print("="*60)
-                            print(f"✓ GPIO {GPIO_OFFSET} {TRIGGER_DURATION} saniye boyunca HIGH!")
-                            print("="*60)
-                            print()
-
-                            # Recovery'yi tetikle
-                            trigger_recovery()
-
-                            # Eğer buraya kadar geldiyse, recovery başarısız oldu
-                            print("\nRecovery başlatılamadı. İzlemeye devam ediliyor...\n")
-                            high_state = False
+                        # Normal durum
+                        logger.debug(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}% - Bekleniyor...")
                 else:
-                    if high_state:
-                        # HIGH durumundan çıkış
-                        elapsed = time.time() - high_start_time
-                        print(f"[{time.strftime('%H:%M:%S')}] GPIO {GPIO_OFFSET} LOW - süre sıfırlandı ({elapsed:.1f}s)")
-                        high_state = False
-                        high_start_time = 0.0
+                    logger.warning(f"[{time.strftime('%H:%M:%S')}] PWM okunamadı")
 
-                time.sleep(POLL_INTERVAL)
+                time.sleep(1)  # 1 saniye bekleme
 
             except Exception as e:
-                print(f"HATA: GPIO okuma hatası: {e}")
-                break
+                logger.error(f"HATA: Döngü hatası: {e}", exc_info=True)
+                time.sleep(1)
 
     finally:
         # Cleanup
+        logger.info("Temizlik işlemleri yapılıyor...")
         try:
             line.release()
             chip.close()
-            print("\nGPIO kaynakları serbest bırakıldı.")
-        except Exception:
-            pass
+            logger.info("GPIO kaynakları serbest bırakıldı.")
+        except Exception as e:
+            logger.error(f"GPIO cleanup hatası: {e}")
 
-    print("İzleme durduruldu.")
+        cleanup_led_gpio()
 
-    # LED cleanup
-    cleanup_led_gpio()
 
 if __name__ == "__main__":
     main()

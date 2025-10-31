@@ -9,7 +9,7 @@
 #include <ESP8266WebServer.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
-#include <Updater.h>
+#include <Updater.h>       // ESP8266 için Update sınıfı burada
 #include <ArduinoOTA.h>
 
 // =================== Yapılandırma ===================
@@ -51,8 +51,8 @@ const uint8_t PIN_LED    = 2;    // LED çıkışı (AKTİF HIGH: HIGH=yanık, L
 // --- Kullanıcı aksiyonu için boştaki pin (iki/üç kısa basış) ---
 const uint8_t PIN_ACTION = 16;   // D0 (GPIO16) – iki/üç basışa göre HIGH/LOW
 
-// --- Recovery pin (20 kez basış) ---
-const uint8_t PIN_RECOVERY = 13; // D7 (GPIO13) – 20 kez basışta HIGH
+// --- Recovery pin (PWM üretilecek) ---
+const uint8_t PIN_RECOVERY = 13; // D7 (GPIO13) – 5 veya 20 kez basışta PWM
 
 // ==== Zamanlamalar ====
 const uint32_t DEBOUNCE_MS   = 30;
@@ -61,7 +61,7 @@ const uint32_t PRE_OFF_MS    = 120;
 
 // --- Çoklu basış takibi ---
 const uint32_t MULTI_PRESS_WINDOW_MS = 1000;               // 1 sn içinde art arda basış
-const uint32_t RECOVERY_SIGNAL_DURATION_MS = 15000;        // Recovery sinyali 15 saniye HIGH
+const uint32_t RECOVERY_SIGNAL_DURATION_MS = 15000;        // Recovery sinyali/PWM 15 saniye
 
 // ==== Dahili durum ====
 bool     btnState     = false;
@@ -79,7 +79,7 @@ uint32_t recoveryTriggerTs = 0;
 // ===================== ESP8266: PWM ile Yüzdelik SOC =====================
 
 // --- Pin ve PWM konfig ---
-const uint8_t  PWM_PIN   = 15;   // D8 (GPIO15)
+const uint8_t  PWM_PIN   = 15;   // D8 (GPIO15) – SOC PWM çıkışı
 #define ACTIVE_LOW 0             // 1: LOW=aktif (ters PWM), 0: HIGH=aktif
 
 // --- PWM zaman tabanı ---
@@ -122,6 +122,19 @@ void socPwmInit() {
   analogWriteRange(PWM_RANGE);
   pinMode(PWM_PIN, OUTPUT);
   analogWrite(PWM_PIN, 0); // başlangıç: %0 duty
+}
+
+// PIN_RECOVERY üstünde belirtilen süre (RECOVERY_SIGNAL_DURATION_MS) boyunca PWM üret
+void startRecoveryPwm(uint16_t duty_0_1000) {
+  if (duty_0_1000 > PWM_RANGE) duty_0_1000 = PWM_RANGE;
+  pinMode(PIN_RECOVERY, OUTPUT);
+  analogWrite(PIN_RECOVERY, duty_0_1000);
+  recoveryTriggered = true;
+  recoveryTriggerTs = millis();
+  Serial.printf("[RECOVERY] PWM başladı: duty=%u/%u (~%u%%), süre=%lus\n",
+                duty_0_1000, PWM_RANGE,
+                (unsigned)((100UL * duty_0_1000) / PWM_RANGE),
+                (unsigned)(RECOVERY_SIGNAL_DURATION_MS/1000));
 }
 
 // === İlk açılışta güvenilir SOC okuması için tampon doldurma ===
@@ -325,8 +338,7 @@ void sendLoginPage(const String& msg = "") {
       "<style>body{font-family:Arial;padding:24px;max-width:420px;margin:auto}"
       "h1{font-size:20px}form{display:flex;flex-direction:column;gap:8px}"
       "input[type=text],input[type=password]{padding:8px;font-size:14px}"
-      "button{padding:10px 12px;font-size:14px;cursor:pointer}"
-      ".err{color:#b00020;margin:8px 0}</style></head><body>");
+      "button{padding:10px 12px;font-size:14px;cursor:pointer}.err{color:#b00020;margin:8px 0}</style></head><body>");
   html += F("<h1>ESP8266 OTA Giriş</h1>");
   if (msg.length()) { html += "<div class='err'>" + msg + "</div>"; }
   html +=
@@ -603,12 +615,10 @@ void loop() {
         pressCounter++;
         Serial.print("pressCounter = "); Serial.println(pressCounter);
 
-        // ---- Önce yüksek eşikler: 20 -> Recovery, 10 -> OTA aç/kapa ----
+        // ---- Önce yüksek eşikler: 20 -> Recovery PWM, 10 -> OTA aç/kapa ----
         if (pressCounter == 20 && !recoveryTriggered) {
-          recoveryTriggered = true;
-          recoveryTriggerTs = now;
-          digitalWrite(PIN_RECOVERY, HIGH);
-          Serial.println("[RECOVERY] 20 kez basış -> PIN_RECOVERY = HIGH (15 saniye)");
+          // %75 duty (750/1000) ile 15 sn PWM
+          startRecoveryPwm((PWM_RANGE * 3) / 4);  // 750
           pressCounter = 0;
         }
         // === YENİ: 10 basış ve OTA AÇIK ise OTA'dan çık + Wi-Fi OFF
@@ -623,6 +633,12 @@ void loop() {
           enterOtaMode();
           pressCounter = 0;
         }
+        // ---- 5 basış -> %25 duty ile PWM ----
+        else if (pressCounter == 5 && !recoveryTriggered) {
+          // %25 duty (250/1000) ile 15 sn PWM
+          startRecoveryPwm(PWM_RANGE / 4);        // 250
+          pressCounter = 0;
+        }
         else if (pressCounter == 2 && recordState == false) {
           recordState = true;
           Serial.println("[ACTION] Iki kez basıldı -> PIN_ACTION = HIGH (Kayıt Aç)");
@@ -633,7 +649,6 @@ void loop() {
           digitalWrite(PIN_ACTION, LOW);
           Serial.println("[ACTION] Üç kez basıldı -> PIN_ACTION = LOW (Kayıt Kapat)");
         }
-
 
       } else {
         Serial.println("Buton bırakıldı.");
@@ -655,12 +670,14 @@ void loop() {
     pressCounter = 0;
   }
 
-  // Recovery modu aktifse pini 15 sn HIGH tut, sonra kapat
+  // Recovery modu aktifse pini 15 sn PWM sür, sonra kapat
   if (recoveryTriggered) {
     if (now - recoveryTriggerTs >= RECOVERY_SIGNAL_DURATION_MS) {
+      // PWM'i durdur
+      analogWrite(PIN_RECOVERY, 0);
       digitalWrite(PIN_RECOVERY, LOW);
       recoveryTriggered = false;
-      Serial.println("[RECOVERY] Recovery sinyali sonlandı (PIN_RECOVERY = LOW).");
+      Serial.println("[RECOVERY] PWM süresi doldu, PIN_RECOVERY kapatıldı (LOW).");
     }
   }
 
