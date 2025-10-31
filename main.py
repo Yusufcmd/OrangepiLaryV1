@@ -1541,62 +1541,37 @@ def update_system():
         git_dir = os.path.join(target_dir, ".git")
 
         if os.path.exists(git_dir):
-            # Klasör zaten bir git deposuysa, pull yap
-            logger.info("Mevcut repo güncelleniyor (git pull)...")
+            # Klasör zaten bir git deposuysa
+            logger.info("Mevcut repo güncelleniyor...")
 
-            # Önce fetch yapalım
-            fetch_result = subprocess.run(
-                ["git", "-C", target_dir, "fetch", "origin"],
+            # Önce remote kontrolü yap
+            remote_check = subprocess.run(
+                ["git", "-C", target_dir, "remote", "get-url", "origin"],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=10
             )
 
-            # Sonra pull (veya reset --hard origin/main)
-            result = subprocess.run(
-                ["git", "-C", target_dir, "pull", "origin", "main"],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-
-            # Eğer pull başarısız olursa, reset --hard dene
-            if result.returncode != 0:
-                logger.warning("git pull başarısız, reset --hard deneniyor...")
-                result = subprocess.run(
-                    ["git", "-C", target_dir, "reset", "--hard", "origin/main"],
+            # Remote yoksa veya yanlışsa, doğru remote'u ekle/güncelle
+            if remote_check.returncode != 0:
+                logger.info("Origin remote ekleniyor...")
+                subprocess.run(
+                    ["git", "-C", target_dir, "remote", "add", "origin", repo_url],
                     capture_output=True,
                     text=True,
-                    timeout=60
+                    timeout=10
                 )
-        else:
-            # Git deposu yok - mevcut klasöre git init yap
-            logger.info("Git deposu başlatılıyor...")
+            elif repo_url not in remote_check.stdout:
+                logger.info("Origin remote güncelleniyor...")
+                subprocess.run(
+                    ["git", "-C", target_dir, "remote", "set-url", "origin", repo_url],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
 
-            # 1. git init
-            init_result = subprocess.run(
-                ["git", "-C", target_dir, "init"],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if init_result.returncode != 0:
-                raise Exception(f"git init başarısız: {init_result.stderr}")
-
-            # 2. remote ekle
-            remote_result = subprocess.run(
-                ["git", "-C", target_dir, "remote", "add", "origin", repo_url],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if remote_result.returncode != 0:
-                # Remote zaten varsa sorun değil, devam et
-                logger.warning(f"Remote add uyarısı: {remote_result.stderr}")
-
-            # 3. fetch
+            # Fetch yap
+            logger.info("Uzak depo bilgileri getiriliyor (fetch)...")
             fetch_result = subprocess.run(
                 ["git", "-C", target_dir, "fetch", "origin"],
                 capture_output=True,
@@ -1607,32 +1582,154 @@ def update_system():
             if fetch_result.returncode != 0:
                 raise Exception(f"git fetch başarısız: {fetch_result.stderr}")
 
-            # 4. checkout main branch
-            checkout_result = subprocess.run(
-                ["git", "-C", target_dir, "checkout", "-b", "main", "origin/main"],
+            # Uzak repodaki default branch'i tespit et (main veya master)
+            logger.info("Default branch tespit ediliyor...")
+            remote_branch_check = subprocess.run(
+                ["git", "-C", target_dir, "ls-remote", "--symref", "origin", "HEAD"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=10
             )
 
-            # Eğer branch zaten varsa, sadece checkout yap
-            if checkout_result.returncode != 0:
+            # Default branch'i belirle
+            default_branch = "main"  # varsayılan
+            if remote_branch_check.returncode == 0:
+                for line in remote_branch_check.stdout.splitlines():
+                    if "ref: refs/heads/" in line:
+                        default_branch = line.split("refs/heads/")[1].split()[0]
+                        logger.info(f"Uzak repoda tespit edilen default branch: {default_branch}")
+                        break
+
+            # Eğer tespit edilemezse, mevcut branch'lere bakarak karar ver
+            if default_branch == "main":
+                branches_check = subprocess.run(
+                    ["git", "-C", target_dir, "branch", "-r"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if "origin/master" in branches_check.stdout and "origin/main" not in branches_check.stdout:
+                    default_branch = "master"
+                    logger.info("origin/main yok, master kullanılacak")
+
+            # Mevcut branch'i kontrol et
+            branch_check = subprocess.run(
+                ["git", "-C", target_dir, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            current_branch = branch_check.stdout.strip()
+            logger.info(f"Mevcut branch: {current_branch}")
+
+            # Default branch'e geç (yoksa oluştur)
+            if current_branch != default_branch:
+                logger.info(f"{default_branch} branch'e geçiliyor...")
                 checkout_result = subprocess.run(
-                    ["git", "-C", target_dir, "checkout", "main"],
+                    ["git", "-C", target_dir, "checkout", "-B", default_branch, f"origin/{default_branch}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if checkout_result.returncode != 0:
+                    logger.warning(f"Checkout uyarısı: {checkout_result.stderr}")
+
+            # Reset --hard ile güncelle (conflict'leri önlemek için)
+            logger.info(f"Güncelleme yapılıyor (reset --hard origin/{default_branch})...")
+            result = subprocess.run(
+                ["git", "-C", target_dir, "reset", "--hard", f"origin/{default_branch}"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+        else:
+            # Git deposu yok - yeni clone yap
+            logger.info("Git deposu klonlanıyor...")
+
+            # Klasörde dosya varsa, önce yedekle
+            existing_files = os.listdir(target_dir) if os.path.exists(target_dir) else []
+            if existing_files:
+                logger.warning(f"Hedef klasörde {len(existing_files)} dosya var, git init ile devam ediliyor...")
+
+                # git init
+                init_result = subprocess.run(
+                    ["git", "-C", target_dir, "init"],
                     capture_output=True,
                     text=True,
                     timeout=30
                 )
 
-                # Main branch'e geç ve pull yap
-                result = subprocess.run(
-                    ["git", "-C", target_dir, "pull", "origin", "main"],
+                if init_result.returncode != 0:
+                    raise Exception(f"git init başarısız: {init_result.stderr}")
+
+                # remote ekle
+                subprocess.run(
+                    ["git", "-C", target_dir, "remote", "add", "origin", repo_url],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                # fetch
+                fetch_result = subprocess.run(
+                    ["git", "-C", target_dir, "fetch", "origin"],
                     capture_output=True,
                     text=True,
                     timeout=60
                 )
-            else:
+
+                if fetch_result.returncode != 0:
+                    raise Exception(f"git fetch başarısız: {fetch_result.stderr}")
+
+                # Default branch'i tespit et
+                remote_branch_check = subprocess.run(
+                    ["git", "-C", target_dir, "ls-remote", "--symref", "origin", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+
+                default_branch = "main"  # varsayılan
+                if remote_branch_check.returncode == 0:
+                    for line in remote_branch_check.stdout.splitlines():
+                        if "ref: refs/heads/" in line:
+                            default_branch = line.split("refs/heads/")[1].split()[0]
+                            break
+
+                # Eğer tespit edilemezse branch'lere bak
+                if default_branch == "main":
+                    branches_check = subprocess.run(
+                        ["git", "-C", target_dir, "branch", "-r"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if "origin/master" in branches_check.stdout and "origin/main" not in branches_check.stdout:
+                        default_branch = "master"
+
+                # checkout default branch
+                checkout_result = subprocess.run(
+                    ["git", "-C", target_dir, "checkout", "-B", default_branch, f"origin/{default_branch}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
                 result = checkout_result
+
+            else:
+                # Boş klasör, direkt clone yap
+                parent_dir = os.path.dirname(target_dir)
+                folder_name = os.path.basename(target_dir)
+
+                result = subprocess.run(
+                    ["git", "-C", parent_dir, "clone", repo_url, folder_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
 
         output = result.stdout + result.stderr
         logger.info(f"Git çıktısı: {output}")
@@ -1656,7 +1753,7 @@ def update_system():
         return {
             "success": False,
             "message": "İşlem zaman aşımına uğradı",
-            "error": "Git komutu 60 saniye içinde tamamlanamadı"
+            "error": "Git komutu belirlenen süre içinde tamamlanamadı"
         }
     except Exception as e:
         logger.error(f"Güncelleme hatası: {e}")
