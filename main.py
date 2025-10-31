@@ -1501,6 +1501,171 @@ def ip_and_device():
         logger.error(f"IP alma hatası: {e}")
     return f"IP: {wlan0_ip}, Cihaz: {hostname}"
 
+@app.route("/update")
+def update_page():
+    """Sistem güncelleme sayfası"""
+    if "uid" not in session:
+        return redirect(url_for("login"))
+    return render_template("update.html")
+
+@app.route("/update_system", methods=["POST"])
+def update_system():
+    """GitHub'dan güncellemeleri çek ve clary klasörüne kopyala"""
+    if "uid" not in session:
+        return {"success": False, "message": "Oturum gerekli"}, 401
+
+    try:
+        repo_url = "https://github.com/Yusufcmd/OrangepiLaryV1.git"
+        target_dir = os.path.join(BASE_DIR, "clary")
+
+        logger.info(f"Güncelleme başlatıldı - Hedef: {target_dir}")
+
+        # clary klasörü yoksa oluştur
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+            logger.info(f"clary klasörü oluşturuldu: {target_dir}")
+
+        # Git safe.directory ayarını ekle (güvenlik hatası önleme)
+        try:
+            subprocess.run(
+                ["git", "config", "--global", "--add", "safe.directory", target_dir],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            logger.info(f"Git safe.directory eklendi: {target_dir}")
+        except Exception as e:
+            logger.warning(f"Git safe.directory eklenemedi: {e}")
+
+        # Git deposu var mı kontrol et
+        git_dir = os.path.join(target_dir, ".git")
+
+        if os.path.exists(git_dir):
+            # Klasör zaten bir git deposuysa, pull yap
+            logger.info("Mevcut repo güncelleniyor (git pull)...")
+
+            # Önce fetch yapalım
+            fetch_result = subprocess.run(
+                ["git", "-C", target_dir, "fetch", "origin"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            # Sonra pull (veya reset --hard origin/main)
+            result = subprocess.run(
+                ["git", "-C", target_dir, "pull", "origin", "main"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            # Eğer pull başarısız olursa, reset --hard dene
+            if result.returncode != 0:
+                logger.warning("git pull başarısız, reset --hard deneniyor...")
+                result = subprocess.run(
+                    ["git", "-C", target_dir, "reset", "--hard", "origin/main"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+        else:
+            # Git deposu yok - mevcut klasöre git init yap
+            logger.info("Git deposu başlatılıyor...")
+
+            # 1. git init
+            init_result = subprocess.run(
+                ["git", "-C", target_dir, "init"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if init_result.returncode != 0:
+                raise Exception(f"git init başarısız: {init_result.stderr}")
+
+            # 2. remote ekle
+            remote_result = subprocess.run(
+                ["git", "-C", target_dir, "remote", "add", "origin", repo_url],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if remote_result.returncode != 0:
+                # Remote zaten varsa sorun değil, devam et
+                logger.warning(f"Remote add uyarısı: {remote_result.stderr}")
+
+            # 3. fetch
+            fetch_result = subprocess.run(
+                ["git", "-C", target_dir, "fetch", "origin"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if fetch_result.returncode != 0:
+                raise Exception(f"git fetch başarısız: {fetch_result.stderr}")
+
+            # 4. checkout main branch
+            checkout_result = subprocess.run(
+                ["git", "-C", target_dir, "checkout", "-b", "main", "origin/main"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            # Eğer branch zaten varsa, sadece checkout yap
+            if checkout_result.returncode != 0:
+                checkout_result = subprocess.run(
+                    ["git", "-C", target_dir, "checkout", "main"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                # Main branch'e geç ve pull yap
+                result = subprocess.run(
+                    ["git", "-C", target_dir, "pull", "origin", "main"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+            else:
+                result = checkout_result
+
+        output = result.stdout + result.stderr
+        logger.info(f"Git çıktısı: {output}")
+
+        if result.returncode == 0:
+            return {
+                "success": True,
+                "message": "Güncelleme başarıyla tamamlandı",
+                "output": output
+            }
+        else:
+            logger.error(f"Git hatası: {output}")
+            return {
+                "success": False,
+                "message": "Güncelleme başarısız oldu",
+                "error": output
+            }
+
+    except subprocess.TimeoutExpired:
+        logger.error("Git işlemi zaman aşımına uğradı")
+        return {
+            "success": False,
+            "message": "İşlem zaman aşımına uğradı",
+            "error": "Git komutu 60 saniye içinde tamamlanamadı"
+        }
+    except Exception as e:
+        logger.error(f"Güncelleme hatası: {e}")
+        return {
+            "success": False,
+            "message": "Beklenmeyen bir hata oluştu",
+            "error": str(e)
+        }
+
 # ================================ Temizlik ================================
 def cleanup_resources():
     logger.info("Kapanış — kaynak temizleniyor.")

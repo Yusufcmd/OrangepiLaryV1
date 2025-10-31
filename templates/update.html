@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistem Güncelleme</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            text-align: center;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 5px;
+        }
+        .info-box p {
+            margin: 5px 0;
+            color: #555;
+            font-size: 14px;
+        }
+        .info-box strong {
+            color: #333;
+        }
+        .update-btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 15px;
+        }
+        .update-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+        .update-btn:active {
+            transform: translateY(0);
+        }
+        .update-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .back-btn {
+            width: 100%;
+            padding: 12px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: block;
+            text-align: center;
+        }
+        .back-btn:hover {
+            background: #5a6268;
+        }
+        .status-box {
+            background: #e9ecef;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            display: none;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status-box.active {
+            display: block;
+        }
+        .status-box h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        .log-line {
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .log-line.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        .log-line.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .log-line.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .log-line.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔄 Sistem Güncelleme</h1>
+        <p class="subtitle">GitHub'dan son güncellemeleri çek</p>
+
+        <div class="info-box">
+            <p><strong>Repository:</strong> OrangepiLaryV1</p>
+            <p><strong>Hedef Klasör:</strong> clary/</p>
+            <p><strong>GitHub URL:</strong> https://github.com/Yusufcmd/OrangepiLaryV1.git</p>
+        </div>
+
+        <button class="update-btn" id="updateBtn" onclick="startUpdate()">
+            <span id="btnText">Güncellemeleri Çek</span>
+        </button>
+
+        <a href="/" class="back-btn">⬅️ Ana Sayfaya Dön</a>
+
+        <div class="status-box" id="statusBox">
+            <h3>Güncelleme Durumu</h3>
+            <div id="logContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        function addLog(message, type = 'info') {
+            const logContainer = document.getElementById('logContainer');
+            const logLine = document.createElement('div');
+            logLine.className = `log-line ${type}`;
+            logLine.textContent = message;
+            logContainer.appendChild(logLine);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function startUpdate() {
+            const updateBtn = document.getElementById('updateBtn');
+            const btnText = document.getElementById('btnText');
+            const statusBox = document.getElementById('statusBox');
+            const logContainer = document.getElementById('logContainer');
+
+            // Disable button and show loading
+            updateBtn.disabled = true;
+            btnText.innerHTML = '<span class="spinner"></span>Güncelleniyor...';
+
+            // Show status box and clear previous logs
+            statusBox.classList.add('active');
+            logContainer.innerHTML = '';
+
+            addLog('🚀 Güncelleme işlemi başlatıldı...', 'info');
+            addLog('📡 GitHub deposuna bağlanılıyor...', 'info');
+
+            // Make AJAX request
+            fetch('/update_system', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token() }}'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addLog('✅ ' + data.message, 'success');
+                    if (data.output) {
+                        data.output.split('\n').forEach(line => {
+                            if (line.trim()) {
+                                addLog('  ' + line, 'info');
+                            }
+                        });
+                    }
+                    addLog('🎉 Güncelleme başarıyla tamamlandı!', 'success');
+                    btnText.textContent = 'Güncelleme Tamamlandı ✓';
+                } else {
+                    addLog('❌ ' + data.message, 'error');
+                    if (data.error) {
+                        addLog('Hata detayı: ' + data.error, 'error');
+                    }
+                    updateBtn.disabled = false;
+                    btnText.textContent = 'Tekrar Dene';
+                }
+            })
+            .catch(error => {
+                addLog('❌ Bağlantı hatası: ' + error.message, 'error');
+                updateBtn.disabled = false;
+                btnText.textContent = 'Tekrar Dene';
+            });
+        }
+    </script>
+</body>
+</html>
+

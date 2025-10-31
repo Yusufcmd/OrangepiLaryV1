@@ -31,6 +31,7 @@
     <a href="{{ url_for('index') }}">Video Stream</a>
     <a href="{{ url_for('control_wifi') }}">Wi-Fi Ayarları</a>
     <a href="{{ url_for('records.list_records') }}">Kayıtlar</a>
+    <a href="{{ url_for('update_page') }}">🔄 Güncelleme</a>
     <div class="right">
       {% set _user = session.get('user') or session.get('username') %}
       {% if _user %}
