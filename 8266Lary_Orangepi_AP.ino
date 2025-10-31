@@ -17,17 +17,27 @@
 #define UPDATE_BEGIN_UNKNOWN() Update.begin( (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000 )
 
 // ==== Wi-Fi / OTA ayarları (10 basışta devreye girer) ====
-const char* WIFI_SSID = "simcleverY";
-const char* WIFI_PASS = "rise1234";
+const char* WIFI_SSID = "simclever";
+const char* WIFI_PASS = "simclever54321";
 
-const char* OTA_USER = "simcleverY";
-const char* OTA_PASS = "otaESPZUYzxZSf2lfq1uyVDH8v2";
+const char* OTA_USER = "simclever";
+const char* OTA_PASS = "simclever54321";
 
 bool        otaModeActive = false;    // OTA mod bayrağı (10 basış)
 bool        otaInitDone   = false;    // ArduinoOTA.begin() yapıldı mı
 bool        otaControl    = false;
 uint32_t    otaStartTs    = 0;
 const uint32_t OTA_CONNECT_INFO_MS = 30000; // 30 sn bilgi logu
+
+// --- RPi yeniden başlatma zamanlayıcısı (GRACE iptalinde) ---
+const uint32_t RPI_START_DELAY_MS = 30000;  // 20 sn
+bool     rpiStartPending = false;           // bekleyen açılış var mı
+uint32_t rpiStartDueTs   = 0;               // açılış hedef zamanı (millis)
+
+// --- RPi boot koruma (Orange Pi'nin boot olması için gereken süre) ---
+const uint32_t RPI_BOOT_GUARD_MS = 30000;   // 30 saniye boot koruma süresi
+uint32_t rpiBootStartTs = 0;                // RPi başlatma zamanı
+bool     rpiBootGuardActive = false;        // Boot koruma aktif mi?
 
 // ==== Web Server & Session ====
 ESP8266WebServer server(80);
@@ -41,10 +51,10 @@ static const size_t HEADER_KEYS_COUNT = sizeof(HEADER_KEYS)/sizeof(HEADER_KEYS[0
 // ==== Pin seçimleri (NodeMCU eşleşmesi: D1=GPIO5, D2=GPIO4) ====
 const uint8_t PIN_LATCH  = 4;    // GPIO4 (D2)
 const uint8_t PIN_SENSE  = 5;    // GPIO5 (D1)
-const uint8_t RPI_PIN    = 14;   // D5
-const uint8_t RPIS_PIN   = 12;   // D6 Shutdown pin
+const uint8_t RPI_PIN    = 14;   // D5 (Raspberry güç kontrol / HIGH=kes, LOW=çalış)
+const uint8_t RPIS_PIN   = 12;   // D6 (Raspberry shutdown sinyali / HIGH=normal)
 const uint8_t BatteryVal = A0;
-int shutdown_cooldown = 20;
+int shutdown_cooldown = 20;      // GRACE: 20 saniye
 
 const uint8_t PIN_LED    = 2;    // LED çıkışı (AKTİF HIGH: HIGH=yanık, LOW=sönük)
 
@@ -57,11 +67,11 @@ const uint8_t PIN_RECOVERY = 13; // D7 (GPIO13) – 5 veya 20 kez basışta PWM
 // ==== Zamanlamalar ====
 const uint32_t DEBOUNCE_MS   = 30;
 const uint32_t LONGPRESS_MS  = 5000;
-const uint32_t PRE_OFF_MS    = 120;
+const uint32_t PRE_OFF_MS    = 120;  // (artık blok kullanılmıyor, GRACE var)
 
 // --- Çoklu basış takibi ---
 const uint32_t MULTI_PRESS_WINDOW_MS = 1000;               // 1 sn içinde art arda basış
-const uint32_t RECOVERY_SIGNAL_DURATION_MS = 15000;        // Recovery sinyali/PWM 15 saniye
+const uint32_t RECOVERY_SIGNAL_DURATION_MS = 15000;        // Varsayılan: 15 sn
 
 // ==== Dahili durum ====
 bool     btnState     = false;
@@ -75,6 +85,7 @@ uint32_t lastPressEdgeTs = 0;
 // --- Recovery durum ---
 bool     recoveryTriggered = false;
 uint32_t recoveryTriggerTs = 0;
+uint32_t recoveryDurationMs = RECOVERY_SIGNAL_DURATION_MS; // AKTİF PWM için süre
 
 // ===================== ESP8266: PWM ile Yüzdelik SOC =====================
 
@@ -124,17 +135,24 @@ void socPwmInit() {
   analogWrite(PWM_PIN, 0); // başlangıç: %0 duty
 }
 
-// PIN_RECOVERY üstünde belirtilen süre (RECOVERY_SIGNAL_DURATION_MS) boyunca PWM üret
-void startRecoveryPwm(uint16_t duty_0_1000) {
+// === SOC PWM'i durdur (GRACE sırasında) ===
+void socPwmStop() {
+  analogWrite(PWM_PIN, 0);
+  // g_socAvgLatest sabit kalsın; tekrar başlatınca yeniden ayarlanacak
+}
+
+// PIN_RECOVERY üstünde belirtilen süre boyunca PWM üret
+void startRecoveryPwm(uint16_t duty_0_1000, uint32_t duration_ms) {
   if (duty_0_1000 > PWM_RANGE) duty_0_1000 = PWM_RANGE;
   pinMode(PIN_RECOVERY, OUTPUT);
   analogWrite(PIN_RECOVERY, duty_0_1000);
-  recoveryTriggered = true;
-  recoveryTriggerTs = millis();
+  recoveryDurationMs = duration_ms;
+  recoveryTriggered  = true;
+  recoveryTriggerTs  = millis();      // referans zaman
   Serial.printf("[RECOVERY] PWM başladı: duty=%u/%u (~%u%%), süre=%lus\n",
                 duty_0_1000, PWM_RANGE,
                 (unsigned)((100UL * duty_0_1000) / PWM_RANGE),
-                (unsigned)(RECOVERY_SIGNAL_DURATION_MS/1000));
+                (unsigned)(duration_ms/1000));
 }
 
 // === İlk açılışta güvenilir SOC okuması için tampon doldurma ===
@@ -201,7 +219,10 @@ LedMode  ledMode = LED_NORMAL;
 bool     ledStateOn = true;
 uint32_t ledTs = 0;
 uint8_t  lowBattCycles = 0;
-bool     shuttingDown = false;
+
+// GRACE (kapanma bekleme) durumu
+bool     shuttingDown = false;      // true => 20 sn GRACE penceresi aktif
+uint32_t shutdownStartTs = 0;       // GRACE başlangıç zamanı
 
 inline void ledSet(bool on) {
   digitalWrite(PIN_LED, on ? HIGH : LOW); // aktif HIGH
@@ -216,6 +237,7 @@ const uint32_t REC_OFF_MS = 500;
 const uint32_t LB_PHASE_MS = 300;
 
 void ledUpdate(uint32_t now) {
+  // GRACE sırasında LED tamamıyla sönük kalmalı
   if (shuttingDown) return;
 
   if (ledMode == LED_LOW_BATT) {
@@ -225,8 +247,7 @@ void ledUpdate(uint32_t now) {
       if (!ledStateOn) {
         lowBattCycles++;
         if (lowBattCycles >= 10) {
-          shuttingDown = true;
-          gracefulShutdown();
+          // düşük bataryada otomatik kapanma tetiklemesi zaten loop içinde yapılacak
         }
       }
     }
@@ -245,35 +266,9 @@ void ledUpdate(uint32_t now) {
   if (!ledStateOn) ledSet(true);
 }
 
-// ===================== Güvenli Kapatma =====================
-void gracefulShutdown() {
-  Serial.println("=== Graceful Shutdown Başladı ===");
-  Serial.println("Uygulama kapanış işlemleri...");
-
-  delay(10);
-  Serial.println("LED uyarısı veriliyor...");
-  ledSet(true);
-  delay(60);
-  ledSet(false);
-
-  Serial.println("Raspberry Pi kapatma sinyali gönderiliyor...");
-  digitalWrite(RPIS_PIN, LOW);
-  delay(shutdown_cooldown * 1000);
-  Serial.println("Raspberry Pi kapandı, güç kesiliyor...");
-
-  digitalWrite(RPI_PIN, HIGH);
-  delay(1000);
-
-  Serial.println("AP2112K LATCH LOW -> Güç kesilecek!");
-  digitalWrite(PIN_LATCH, LOW);
-
-  Serial.println("=== Güç Kesildi ===");
-}
-
 // ===================== OTA (Wi-Fi + Web Sunucu) =====================
 void enterOtaMode() {
-  if (otaModeActive) return;
-
+  if (otaModeActive || shuttingDown) return; // GRACE'te OTA'ya girme
   otaModeActive = true;
   otaInitDone   = false;
   otaStartTs    = millis();
@@ -361,7 +356,7 @@ void sendOtaPage() {
       "input[type=file]{margin:6px 0}"
       "button{padding:10px 12px;font-size:14px;cursor:pointer}</style></head><body>");
   html += F("<h1>Firmware Güncelle</h1>");
-  html += "<p>IP: " + WiFi.localIP().toString() + "</p>";
+  html += String("<p>IP: ") + WiFi.localIP().toString() + "</p>";
   html +=
     F("<form method='POST' action='/update' enctype='multipart/form-data'>"
       "<input type='file' name='firmware' accept='.bin' required>"
@@ -479,6 +474,134 @@ void startOtaWeb() {
   Serial.println("[OTA-WEB] HTTP sunucu basladi. URL: http://" + WiFi.localIP().toString() + "/");
 }
 
+// ===================== GRACEFUL SHUTDOWN YENİ MİMARİSİ =====================
+// 5 sn uzun basış sonrası: 20 sn GRACE penceresi
+// - LED sönük
+// - ADC/SOC PWM ve diğer işlemler duraklatılır
+// - ESP butonu okumaya devam eder
+// - Bu süre içinde butona tekrar basılırsa iptal edilir ve sistem devam eder
+// - Süre dolarsa RPi güç kesilir ve LATCH LOW ile ESP kapatılır
+
+void beginShutdownGrace() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  shutdownStartTs = millis();
+
+  // Her ihtimale karşı bekleyen açılış randevusunu iptal et
+  rpiStartPending = false;
+
+  Serial.println("=== GRACE Başladı (20s) ===");
+
+  ledSet(false);
+  if (otaModeActive) exitOtaMode();
+  socPwmStop();
+  if (recoveryTriggered) {
+    analogWrite(PIN_RECOVERY, 0);
+    digitalWrite(PIN_RECOVERY, LOW);
+    recoveryTriggered = false;
+  }
+
+  recordState = false;
+  digitalWrite(PIN_ACTION, LOW);
+
+  Serial.println("Raspberry Pi kapatma sinyali gönderiliyor (RPIS LOW)...");
+  digitalWrite(RPIS_PIN, LOW);
+}
+
+void abortShutdownGraceAndResume() {
+  if (!shuttingDown) return;
+
+  Serial.println("=== GRACE İptal Edildi: Sistem devam edecek ===");
+  shuttingDown = false;
+
+  // RPi’yi ŞİMDİ değil; 20 sn SONRA başlatacağız
+  // (Önce RPIS'i normal çalışma seviyesine al)
+  digitalWrite(RPIS_PIN, HIGH);
+
+  // LED, SOC vb. hemen devreye girsin
+  ledMode = recordState ? LED_RECORD : LED_NORMAL;
+  ledSet(true);
+  ledTs = millis();
+
+  // SOC/PWM’i hızlı stabilize et
+  primeAndReadInitialSOC();
+
+  // 20 sn sonra power-cycle ile başlatmayı planla
+  rpiStartPending = true;
+  rpiStartDueTs   = millis() + RPI_START_DELAY_MS;
+  Serial.println("[GRACE] RPi başlatma 20 sn ertelendi (power-cycle planlandı).");
+}
+
+
+void finalizePowerOff() {
+  Serial.println("=== GRACE bitti: Güç kesiliyor ===");
+
+  // LED zaten sönük, tekrar işlem yok
+  // RPi güç kesmeye hazırlan
+  Serial.println("Raspberry güç HIGHe çekiliyor (RPI_PIN HIGH)...");
+  digitalWrite(RPI_PIN, HIGH);
+
+  delay(1000); // Güvenlik için 1 sn
+
+  Serial.println("AP2112K LATCH LOW -> Güç kesilecek!");
+  digitalWrite(PIN_LATCH, LOW);
+
+  // Güç kesildiğinde buradan ileri gidilmez
+}
+
+// ===================== Çoklu Basışı Ertelenmiş Değerlendirme =====================
+void evaluatePressSequence() {
+  uint8_t n = pressCounter;
+  pressCounter = 0;
+
+  if (shuttingDown || recoveryTriggered) {
+    Serial.printf("[PRESS] Değerlendirme atlandı (shutdown=%d, recovery=%d)\n",
+                  shuttingDown, recoveryTriggered);
+    return;
+  }
+  if (n == 0) return;
+
+  Serial.printf("[PRESS] Sekans tamamlandı: %u kez\n", n);
+
+  if (n == 20) {
+    // 20x → %75 duty, 15 sn recovery PWM
+    startRecoveryPwm((PWM_RANGE * 3) / 4, RECOVERY_SIGNAL_DURATION_MS);
+  }
+  else if (n == 10) {
+    // 10x → OTA toggle
+    if (otaModeActive) {
+      Serial.println("[OTA] 10x -> OTA kapatılıyor");
+      exitOtaMode();
+    } else {
+      Serial.println("[OTA] 10x -> OTA açılıyor");
+      enterOtaMode();
+    }
+  }
+  else if (n == 5) {
+    // 5x → %25 duty, 5 sn recovery PWM
+    if (!recoveryTriggered) startRecoveryPwm(PWM_RANGE / 4, 5000);
+  }
+  else if (n == 3) {
+    // 3x → Kayıt kapat
+    if (recordState) {
+      recordState = false;
+      digitalWrite(PIN_ACTION, LOW);
+      Serial.println("[ACTION] 3x -> Kayıt Kapat");
+    }
+  }
+  else if (n == 2) {
+    // 2x → Kayıt aç
+    if (!recordState) {
+      recordState = true;
+      digitalWrite(PIN_ACTION, HIGH);
+      Serial.println("[ACTION] 2x -> Kayıt Aç");
+    }
+  }
+  else {
+    Serial.println("[PRESS] Eşleşen eylem yok (yoksayıldı).");
+  }
+}
+
 // ===================== setup / loop =====================
 void setup() {
   Serial.begin(9600);
@@ -490,7 +613,8 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_SENSE, INPUT);
   pinMode(BatteryVal, INPUT);
-  digitalWrite(RPI_PIN, HIGH);
+  digitalWrite(RPI_PIN, HIGH);  // başlangıçta gücü kes (HIGH), birazdan LOW yapılacak
+  digitalWrite(RPIS_PIN, HIGH); // normal durumda HIGH
 
   pinMode(PIN_ACTION, OUTPUT);
   digitalWrite(PIN_ACTION, LOW);
@@ -515,29 +639,44 @@ void setup() {
   Serial.printf("Başlangıç SOC=%.1f%%\n", initialSoc);
 
   if (initialSoc < 15.0f) {
-    Serial.println("Başlangıç SOC %15'in altında! RPi başlatılmayacak, düşük batarya uyarısı verilecek ve sistem kapanacak.");
+    Serial.println("Başlangıç SOC %15'in altında! RPi başlatılmayacak, düşük batarya uyarısı verilecek ve sistem kapanma GRACE akışına geçecek.");
     ledMode = LED_LOW_BATT;
     lowBattCycles = 0;
     ledTs = millis();
     ledSet(true);
-    shutdown_cooldown = 3;
-    return; // loop() düşük batarya akışını tamamlayacak
+    shutdown_cooldown = 3; // düşük bataryada kısa GRACE
+    // GRACE'e doğrudan gir
+    beginShutdownGrace();
+    return;
   }
 
   Serial.println("Raspberry Pi başlatılıyor...");
-  digitalWrite(RPI_PIN, LOW);
+  digitalWrite(RPI_PIN, LOW);   // güç ver / çalış
   delay(100);
-  digitalWrite(RPIS_PIN, HIGH);
-
+  digitalWrite(RPIS_PIN, HIGH); // normal çalışma
   delay(50);
+
+  // Boot koruma süresini başlat
+  rpiBootGuardActive = true;
+  rpiBootStartTs = millis();
+  Serial.printf("Orange Pi boot koruması başladı (30 saniye). Boot tamamlanana kadar GRACE modu engellendi.\n");
+
   Serial.println("Sistem hazır.");
 }
 
 void loop() {
   uint32_t now = millis();
 
-  // --- OTA modu ise Wi-Fi bağlanınca OTA servislerini aç ---
-  if (otaModeActive) {
+  // --- Boot koruma süresini kontrol et ---
+  if (rpiBootGuardActive) {
+    if ((now - rpiBootStartTs) >= RPI_BOOT_GUARD_MS) {
+      rpiBootGuardActive = false;
+      Serial.println("[BOOT GUARD] Orange Pi boot koruması sona erdi. Sistem normal çalışıyor.");
+    }
+  }
+
+  // --- OTA modu: sadece GRACE değilken çalıştır ---
+  if (!shuttingDown && otaModeActive) {
     if (WiFi.status() == WL_CONNECTED) {
       if (!webStarted) {
         startOtaWeb();
@@ -565,13 +704,13 @@ void loop() {
     }
   }
 
-  // --- PWM/SOC periyodik güncelle ---
-  if (now - lastSocUpdate >= SOC_UPDATE_MS) {
+  // --- PWM/SOC periyodik güncelle (GRACE değilken) ---
+  if (!shuttingDown && (now - lastSocUpdate >= SOC_UPDATE_MS)) {
     updateSocPwm();
     lastSocUpdate = now;
   }
 
-  // ==== LED mod seçim mantığı ====
+  // ==== LED mod seçim mantığı (GRACE değilken) ====
   if (!shuttingDown) {
     if (g_socAvgLatest < 10.0f) {
       if (ledMode != LED_LOW_BATT) {
@@ -579,6 +718,8 @@ void loop() {
         lowBattCycles = 0;
         ledTs = now;
         ledSet(true);
+        // Düşük batarya tespit edildiğinde GRACE'e geç
+        beginShutdownGrace();
       }
     } else {
       // OTA aktifse LED_RECORD öncelikli, değilse recordState'e göre
@@ -591,8 +732,10 @@ void loop() {
     }
   }
 
-  // LED çıktısını güncelle
-  ledUpdate(now);
+  // LED çıktısını güncelle (GRACE değilken)
+  if (!shuttingDown) {
+    ledUpdate(now);
+  }
 
   // --- Buton okuma / debounce ---
   bool raw = digitalRead(PIN_SENSE);
@@ -606,79 +749,83 @@ void loop() {
       btnState = raw;
 
       if (btnState) {
-        // Basış kenarı
+        // Basış kenarı: SADECE SAY (eylem yok)
         pressStart = now;
         lastPressEdgeTs = now;
         Serial.println("Butona basıldı.");
 
-        // Kısa basış sayacı
-        pressCounter++;
-        Serial.print("pressCounter = "); Serial.println(pressCounter);
-
-        // ---- Önce yüksek eşikler: 20 -> Recovery PWM, 10 -> OTA aç/kapa ----
-        if (pressCounter == 20 && !recoveryTriggered) {
-          // %75 duty (750/1000) ile 15 sn PWM
-          startRecoveryPwm((PWM_RANGE * 3) / 4);  // 750
+        if (shuttingDown) {
+          abortShutdownGraceAndResume();
           pressCounter = 0;
+        } else {
+          pressCounter++;
+          Serial.printf("pressCounter = %u\n", pressCounter);
         }
-        // === YENİ: 10 basış ve OTA AÇIK ise OTA'dan çık + Wi-Fi OFF
-        else if (pressCounter == 10 && otaModeActive) {
-          Serial.println("[OTA] 10 kez basış -> OTA kapatılıyor, Wi-Fi kapatılıyor.");
-          exitOtaMode();
-          pressCounter = 0;
-        }
-        // Mevcut: 10 basış ve OTA KAPALI ise OTA'ya gir
-        else if (pressCounter == 10 && !otaModeActive) {
-          Serial.println("[OTA] 10 kez basış algılandı -> OTA web moduna geçiliyor.");
-          enterOtaMode();
-          pressCounter = 0;
-        }
-        // ---- 5 basış -> %25 duty ile PWM ----
-        else if (pressCounter == 5 && !recoveryTriggered) {
-          // %25 duty (250/1000) ile 15 sn PWM
-          startRecoveryPwm(PWM_RANGE / 4);        // 250
-          pressCounter = 0;
-        }
-        else if (pressCounter == 2 && recordState == false) {
-          recordState = true;
-          Serial.println("[ACTION] Iki kez basıldı -> PIN_ACTION = HIGH (Kayıt Aç)");
-          digitalWrite(PIN_ACTION, HIGH);
-        }
-        else if (pressCounter == 3 && recordState == true) {
-          recordState = false;
-          digitalWrite(PIN_ACTION, LOW);
-          Serial.println("[ACTION] Üç kez basıldı -> PIN_ACTION = LOW (Kayıt Kapat)");
-        }
-
       } else {
         Serial.println("Buton bırakıldı.");
       }
     }
   }
 
-  // Uzun basış (güvenli kapatma) - recovery sırasında devre dışı
-  if (btnState && (now - pressStart >= LONGPRESS_MS) && !shuttingDown && !recoveryTriggered) {
-    Serial.println("Uzun basış algılandı -> Kapatma işlemi başlatılıyor.");
+  // Uzun basış (güvenli kapatma GRACE başlat) - recovery ve boot guard sırasında devre dışı
+  if (!shuttingDown && !rpiBootGuardActive && btnState && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
+    Serial.println("Uzun basış algılandı -> Kapatma GRACE başlatılıyor.");
     pressCounter = 0; // çakışmayı önle
-    shuttingDown = true;
-    gracefulShutdown();
+    beginShutdownGrace();
   }
 
-  // 1 sn içinde yeni basış yoksa sayaç sıfırla (recovery aktifse sıfırlama yapılmaz)
-  if (pressCounter > 0 && (now - lastPressEdgeTs >= MULTI_PRESS_WINDOW_MS) && !recoveryTriggered) {
-    Serial.println("Basış sayacı sıfırlandı (timeout).");
-    pressCounter = 0;
+  // Boot guard aktifken uzun basış engellendiğini bildir
+  if (!shuttingDown && rpiBootGuardActive && btnState && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
+    // Kullanıcıya bilgi ver (1 kez)
+    static bool bootGuardWarningShown = false;
+    if (!bootGuardWarningShown) {
+      uint32_t remaining = (RPI_BOOT_GUARD_MS - (now - rpiBootStartTs)) / 1000;
+      Serial.printf("[BOOT GUARD] Kapatma engellendi. Orange Pi boot oluyor. Kalan süre: %lu saniye\n", remaining);
+      bootGuardWarningShown = true;
+    }
+    // Basış sayacını sıfırla ki tekrar uzun basış kontrolü yapılmasın
+    pressStart = now;
   }
 
-  // Recovery modu aktifse pini 15 sn PWM sür, sonra kapat
+  // 1 sn içinde yeni basış yoksa: SEKANSI DEĞERLENDİR
+  if (!shuttingDown && pressCounter > 0 &&
+      (now - lastPressEdgeTs >= MULTI_PRESS_WINDOW_MS) &&
+      !recoveryTriggered) {
+    evaluatePressSequence();  // --> tek karar noktası
+  }
+
+  // Recovery modu aktifse PWM'i süre bitince kapat
   if (recoveryTriggered) {
-    if (now - recoveryTriggerTs >= RECOVERY_SIGNAL_DURATION_MS) {
-      // PWM'i durdur
-      analogWrite(PIN_RECOVERY, 0);
-      digitalWrite(PIN_RECOVERY, LOW);
+    uint32_t elapsed = millis() - recoveryTriggerTs;
+    if (elapsed >= recoveryDurationMs) {
+      analogWrite(PIN_RECOVERY, 0);        // PWM duty 0
+      digitalWrite(PIN_RECOVERY, LOW);     // hat üzerinde LOW
       recoveryTriggered = false;
       Serial.println("[RECOVERY] PWM süresi doldu, PIN_RECOVERY kapatıldı (LOW).");
     }
+  }
+
+  if (shuttingDown) {
+    uint32_t elapsed = millis() - shutdownStartTs;
+    if (elapsed >= (uint32_t)shutdown_cooldown * 1000UL) {
+      finalizePowerOff();
+      // Güç kesildiği için buradan ilerlenmez
+    }
+  }
+
+  // === GRACE iptal edildiyse ve 20 sn dolduysa RPi'yi başlat ===
+  if (!shuttingDown && rpiStartPending && ( (int32_t)(millis() - rpiStartDueTs) >= 0 )) {
+    Serial.println("[GRACE] 20 sn doldu: RPi power-cycle ile başlatılıyor...");
+    // Kısa power-cycle: HIGH (gücü kes) -> bekle -> LOW (çalış)
+    digitalWrite(RPI_PIN, HIGH);
+    delay(5000);
+    digitalWrite(RPI_PIN, LOW);
+
+    // Çalışma modunda tut
+    digitalWrite(RPIS_PIN, HIGH);
+
+    rpiStartPending = false;
+    Serial.println("[GRACE] RPi başlangıç sinyali gönderildi.");
   }
 
   delay(5);

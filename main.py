@@ -130,6 +130,7 @@ GPIO = None
 _backend = None
 _import_errors = []
 led_pin = None
+ready_led_pin = None  # Pin 258 için sistem hazır LED'i
 
 USE_GPIOD = False
 try:
@@ -187,6 +188,15 @@ def _try_import_gpio():
     except Exception as e:
         logger.warning(f"LED pin init başarısız: {e}")
         led_pin = None
+
+    # Pin 258 için sistem hazır LED'i
+    try:
+        ready_led_pin = 258
+        GPIO.setup(ready_led_pin, GPIO.OUT, initial=GPIO.LOW)
+        logger.info(f"Sistem hazır LED pin {ready_led_pin} başlatıldı")
+    except Exception as e:
+        logger.warning(f"Sistem hazır LED pin init başarısız: {e}")
+        ready_led_pin = None
 
 _try_import_gpio()
 
@@ -1835,6 +1845,14 @@ if __name__ == "__main__":
                 mdns_broadcast.start_mdns_broadcast(hostname=hostname, port=port, service_name=service_name)
             except Exception as _e:
                 logger.error(f"mDNS broadcast başlatılamadı: {_e}")
+
+        # Sistem hazır - Pin 258 LED'ini yak
+        if GPIO is not None and ready_led_pin is not None:
+            try:
+                GPIO.output(ready_led_pin, GPIO.HIGH)
+                logger.info(f"Sistem hazır! Pin {ready_led_pin} HIGH yapıldı (LED yanıyor)")
+            except Exception as e:
+                logger.error(f"Pin {ready_led_pin} HIGH yapılamadı: {e}")
 
         port = int(os.environ.get("PORT", "7447"))
         logger.info(f"Uygulama: http://0.0.0.0:{port}")
