@@ -23,8 +23,13 @@
     .flash-messages{max-width:820px;margin:0 auto 16px;padding:0 16px}
     .flash{padding:12px;border-radius:10px;margin-bottom:8px}
     .flash.success{background:#d1fae5;color:#065f46;border:1px solid #6ee7b7}
-    .flash.error{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
-    .flash.warning{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}
+    .flash.danger,.flash.error{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+    .flash.warning,.flash.info{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}
+    .mode-toggle{display:flex;gap:16px;justify-content:center;margin:16px 0}
+    .mode-btn{padding:12px 24px;border:2px solid var(--border);border-radius:10px;background:var(--card);cursor:pointer;font-weight:600;transition:all 0.2s}
+    .mode-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .mode-btn:hover:not(.active){border-color:var(--accent)}
+    .hidden{display:none}
   </style>
 </head>
 <body>
@@ -48,77 +53,123 @@
   <div class="wrap">
     <h1>Wi-Fi Ayarları</h1>
 
-    <!-- Band ve Kanal Ayarları -->
+    <!-- Mod Seçici (sadece sekme değiştirir; sistem modunu hemen değiştirmez) -->
     <div class="card">
-      <h2>Bant ve Kanal Ayarları</h2>
-      <form method="post" action="{{ url_for('apply_band_channel') }}">
-        <!-- Bant -->
-        <div class="row" style="margin-top:6px">
-          <label class="radio">
-            <input type="radio" name="band" value="2.4" {% if band=='2.4' %}checked{% endif %}> 2.4&nbsp;GHz
-          </label>
-          <label class="radio">
-            <input type="radio" name="band" value="5" {% if band=='5' %}checked{% endif %}> 5&nbsp;GHz
-          </label>
-        </div>
-
-        <!-- Kanal -->
-        <div class="row">
-          <label for="channel" class="muted" style="min-width:70px;text-align:right">Kanal</label>
-          <select id="channel" name="channel"></select>
-        </div>
-
-        <!-- Gönder -->
-        <div class="row" style="margin-top:8px">
-          <button type="submit">Bant/Kanal Uygula</button>
-        </div>
-
-        {# Flask-WTF varsa CSRF token'ı ekle; yoksa bu blok zaten atlanır #}
-        {% if csrf_token %}
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        {% endif %}
-      </form>
-    </div>
-
-    <!-- Şifre Değiştirme -->
-    <div class="card">
-      <h2>Wi-Fi Şifresi</h2>
-      <form method="post" action="{{ url_for('apply_password') }}">
-        <div class="row">
-          <label for="current_pass" class="muted" style="min-width:100px;text-align:right">Mevcut Şifre</label>
-          <input type="text" id="current_pass" value="{{ current_password }}" readonly style="background:#f3f4f6">
-        </div>
-
-        <div class="row">
-          <label for="new_password" class="muted" style="min-width:100px;text-align:right">Yeni Şifre</label>
-          <input type="password" id="new_password" name="password" placeholder="En az 8 karakter" required minlength="8" maxlength="63">
-        </div>
-
-        <div class="row" style="margin-top:8px">
-          <button type="submit">Şifreyi Güncelle</button>
-        </div>
-
-        {% if csrf_token %}
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        {% endif %}
-      </form>
-
-      <p class="muted" style="margin-top:12px">
-        Not: Şifre 8-63 karakter arasında olmalıdır. Değişiklik sonrası erişim noktası yeniden başlatılacaktır.
+      <h2>Wi-Fi Modu</h2>
+      <div class="mode-toggle">
+        <button type="button" id="btnAp" class="mode-btn {% if mode=='ap' %}active{% endif %}" onclick="showTab('ap')">
+          📡 Erişim Noktası (AP)
+        </button>
+        <button type="button" id="btnSta" class="mode-btn {% if mode=='sta' %}active{% endif %}" onclick="showTab('sta')">
+          📶 İstemci (STA)
+        </button>
+      </div>
+      <p class="muted">
+        Bu bölüm sadece görünümü değiştirir. STA modunda ayarlar, SSID ve şifreyi kaydettiğinizde uygulanır.
       </p>
     </div>
 
+    <!-- AP Modu Ayarları -->
+    <div id="apSettings" class="{% if mode=='sta' %}hidden{% endif %}">
+      <!-- Band ve Kanal Ayarları -->
+      <div class="card">
+        <h2>Bant ve Kanal Ayarları</h2>
+        <form method="post" action="{{ url_for('apply_band_channel') }}">
+          <!-- Bant -->
+          <div class="row" style="margin-top:6px">
+            <label class="radio">
+              <input type="radio" name="band" value="2.4" {% if band=='2.4' %}checked{% endif %}> 2.4&nbsp;GHz
+            </label>
+            <label class="radio">
+              <input type="radio" name="band" value="5" {% if band=='5' %}checked{% endif %}> 5&nbsp;GHz
+            </label>
+          </div>
+
+          <!-- Kanal -->
+          <div class="row">
+            <label for="channel" class="muted" style="min-width:70px;text-align:right">Kanal</label>
+            <select id="channel" name="channel"></select>
+          </div>
+
+          <!-- Gönder -->
+          <div class="row" style="margin-top:8px">
+            <button type="submit">Bant/Kanal Uygula</button>
+          </div>
+
+          {% if csrf_token %}
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {% endif %}
+        </form>
+      </div>
+
+      <!-- AP Şifre Değiştirme -->
+      <div class="card">
+        <h2>AP Şifresi</h2>
+        <form method="post" action="{{ url_for('apply_password') }}">
+          <div class="row">
+            <label for="current_pass" class="muted" style="min-width:100px;text-align:right">Mevcut Şifre</label>
+            <input type="text" id="current_pass" value="{{ current_password }}" readonly style="background:#f3f4f6">
+          </div>
+
+          <div class="row">
+            <label for="new_password" class="muted" style="min-width:100px;text-align:right">Yeni Şifre</label>
+            <input type="password" id="new_password" name="password" placeholder="En az 8 karakter" required minlength="8" maxlength="63">
+          </div>
+
+          <div class="row" style="margin-top:8px">
+            <button type="submit">Şifreyi Güncelle</button>
+          </div>
+
+          {% if csrf_token %}
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {% endif %}
+        </form>
+
+        <p class="muted" style="margin-top:12px">
+          Not: Şifre 8-63 karakter arasında olmalıdır. Değişiklik sonrası erişim noktası yeniden başlatılacaktır.
+        </p>
+      </div>
+    </div>
+
+    <!-- STA Modu Ayarları (yalnızca SSID/Şifre girişi) -->
+    <div id="staSettings" class="{% if mode=='ap' %}hidden{% endif %}">
+      <div class="card">
+        <h2>Wi-Fi Ağına Bağlan</h2>
+        <form method="post" action="{{ url_for('connect_sta_network') }}">
+          <div class="row">
+            <label for="sta_ssid" class="muted" style="min-width:80px;text-align:right">SSID</label>
+            <input type="text" id="sta_ssid" name="ssid" placeholder="Ağ adı" required style="min-width:250px">
+          </div>
+
+          <div class="row">
+            <label for="sta_password" class="muted" style="min-width:80px;text-align:right">Şifre</label>
+            <input type="password" id="sta_password" name="password" placeholder="En az 8 karakter" required minlength="8">
+          </div>
+
+          <div class="row" style="margin-top:8px">
+            <button type="submit">Kaydet ve Bağlan</button>
+          </div>
+
+          {% if csrf_token %}
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {% endif %}
+        </form>
+        <p class="muted" style="margin-top:12px">
+          Kaydet’e bastığınızda AP modu kapanıp cihaz seçtiğiniz ağa bağlanmaya çalışacaktır. Bu esnada erişiminiz kesilebilir.
+        </p>
+      </div>
+    </div>
+
     <p class="muted" style="margin-top:12px">
-      Not: Değişiklik sonrası erişim noktası kısa süreli yeniden başlatılabilir.
+      Not: Mod değişikliği yalnızca ilgili ayarlar kaydedildiğinde uygulanır.
     </p>
   </div>
 
   <script>
-    // Sunucudan gelen mevcut değerler:
     const currentBand = "{{ band }}";
     const currentCh   = {{ channel|int }};
+    const initialMode = "{{ mode }}"; // sunucudan gelen mevcut sistem modu
 
-    // Kanal listeleri: DFS dışı basit set
     const CHANNELS_24 = [{% for c in channels_24 %}{{ c }}{% if not loop.last %},{% endif %}{% endfor %}];
     const CHANNELS_5  = [{% for c in channels_5  %}{{ c }}{% if not loop.last %},{% endif %}{% endfor %}];
 
@@ -127,6 +178,7 @@
     const band5  = document.querySelector('input[name="band"][value="5"]');
 
     function fill(band, current){
+      if (!sel) return;
       const list = band === '5' ? CHANNELS_5 : CHANNELS_24;
       sel.innerHTML = '';
       for (const c of list){
@@ -141,8 +193,24 @@
     fill(currentBand === '2.4' ? '2.4' : '5', currentCh || (currentBand === '2.4' ? 6 : 36));
 
     // Bant değişince kanal listesini yeniden doldur
-    band24.addEventListener('change', ()=> fill('2.4', 6));
-    band5 .addEventListener('change', ()=> fill('5', 36));
+    if(band24) band24.addEventListener('change', ()=> fill('2.4', 6));
+    if(band5) band5.addEventListener('change', ()=> fill('5', 36));
+
+    function showTab(mode){
+      const ap = document.getElementById('apSettings');
+      const sta = document.getElementById('staSettings');
+      const btnAp = document.getElementById('btnAp');
+      const btnSta = document.getElementById('btnSta');
+      if (mode === 'ap'){
+        ap.classList.remove('hidden');
+        sta.classList.add('hidden');
+        btnAp.classList.add('active'); btnSta.classList.remove('active');
+      } else {
+        sta.classList.remove('hidden');
+        ap.classList.add('hidden');
+        btnSta.classList.add('active'); btnAp.classList.remove('active');
+      }
+    }
   </script>
 </body>
 </html>

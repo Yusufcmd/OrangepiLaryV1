@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import eventlet; eventlet.monkey_patch()
 
-import os, sys, time, re, subprocess, logging, signal, threading
+import os, sys, time, re, subprocess, logging, signal, threading, shlex, errno
 from datetime import datetime
 from collections import deque
 from typing import Tuple
@@ -227,28 +227,7 @@ def _graceful_exit(signum, frame):
 signal.signal(signal.SIGTERM, _graceful_exit)
 signal.signal(signal.SIGINT,  _graceful_exit)
 
-# ============================ Yardımcı Fonksiyonlar =======================
-def run(cmd: str) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd.split(), capture_output=True, text=True)
-
-def get_connected_ssid() -> str:
-    r = run("iw dev wlan0 link")
-    m = re.search(r"SSID:\s*(.+)", r.stdout)
-    if m:
-        return m.group(1).strip()
-    r2 = run("iwgetid -r")
-    return r2.stdout.strip()
-
-def signal_to_quality(signal_dbm):
-    if signal_dbm is None: return 1
-    s = float(signal_dbm)
-    if s >= -50: return 5
-    if s >= -60: return 4
-    if s >= -70: return 3
-    if s >= -80: return 2
-    return 1
-
-# ============================== AP (hostapd) Ayarları =====================
+# ============================ AP (hostapd) Ayarları =====================
 HOSTAPD_PATHS = [
     "/etc/hostapd/hostapd.conf",
     "/etc/hostapd.conf",
@@ -257,13 +236,50 @@ HOSTAPD_PATHS = [
 CHANNELS_24 = list(range(1, 14))  # 1-13 (TR)
 CHANNELS_5  = [36, 40, 44, 48, 149, 153, 157, 161]  # DFS dışı yaygın kanallar
 
+# Wi-Fi Mod Yönetimi
+def get_wifi_mode() -> str:
+    """Mevcut Wi-Fi modunu döndürür: 'ap' veya 'sta'"""
+    try:
+        # hostapd servisinin durumunu kontrol et
+        r = subprocess.run(["systemctl", "is-active", "hostapd"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip() == "active":
+            return "ap"
+        return "sta"
+    except Exception:
+        # Varsayılan olarak AP modu
+        return "ap"
+
+def set_wifi_mode(mode: str) -> Tuple[bool, str]:
+    """Wi-Fi modunu değiştirir: 'ap' veya 'sta'"""
+    mode = mode.lower().strip()
+    if mode not in ("ap", "sta"):
+        return False, "Geçersiz mod (ap veya sta olmalı)"
+
+    try:
+        if mode == "ap":
+            # STA modunu durdur, AP modunu başlat
+            subprocess.run(["systemctl", "stop", "wpa_supplicant"], capture_output=True)
+            subprocess.run(["systemctl", "disable", "wpa_supplicant"], capture_output=True)
+            subprocess.run(["systemctl", "enable", "hostapd"], capture_output=True)
+            subprocess.run(["systemctl", "start", "hostapd"], capture_output=True)
+            return True, "AP modu etkinleştirildi"
+        else:  # sta
+            # AP modunu durdur, STA modunu başlat
+            subprocess.run(["systemctl", "stop", "hostapd"], capture_output=True)
+            subprocess.run(["systemctl", "disable", "hostapd"], capture_output=True)
+            subprocess.run(["systemctl", "enable", "wpa_supplicant"], capture_output=True)
+            subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
+            # wlan0'ı yeniden yapılandır
+            subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"], capture_output=True)
+            return True, "STA modu etkinleştirildi"
+    except Exception as e:
+        return False, f"Mod değiştirme hatası: {e}"
 
 def hostapd_conf_path() -> str:
     for p in HOSTAPD_PATHS:
         if os.path.exists(p):
             return p
     return HOSTAPD_PATHS[0]
-
 
 def read_ap_band_channel() -> Tuple[str, int]:
     """Hostapd config'ten mevcut band ve channel oku. Yoksa varsayılan (2.4,6)."""
@@ -290,6 +306,20 @@ def read_ap_band_channel() -> Tuple[str, int]:
     if band == "5"   and ch not in CHANNELS_5:  ch = 36
     return band, ch
 
+def read_ap_password() -> str:
+    """hostapd.conf'tan mevcut wpa_passphrase'i oku."""
+    path = hostapd_conf_path()
+    if not os.path.exists(path):
+        return "simclever123"  # Varsayılan
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                ls = line.strip()
+                if ls.startswith("wpa_passphrase="):
+                    return ls.split("=", 1)[1].strip()
+    except Exception as e:
+        logger.warning(f"hostapd şifre okunamadı ({path}): {e}")
+    return "simclever123"
 
 def write_ap_band_channel(band: str, channel: int) -> Tuple[bool, str]:
     """hostapd.conf içinde hw_mode ve channel güncelle.
@@ -345,23 +375,6 @@ def write_ap_band_channel(band: str, channel: int) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"hostapd yazılamadı ({path}): {e}"
 
-
-def read_ap_password() -> str:
-    """hostapd.conf'tan mevcut wpa_passphrase'i oku."""
-    path = hostapd_conf_path()
-    if not os.path.exists(path):
-        return "simclever123"  # Varsayılan
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                ls = line.strip()
-                if ls.startswith("wpa_passphrase="):
-                    return ls.split("=", 1)[1].strip()
-    except Exception as e:
-        logger.warning(f"hostapd şifre okunamadı ({path}): {e}")
-    return "simclever123"
-
-
 def write_ap_password(new_password: str) -> Tuple[bool, str]:
     """hostapd.conf içinde wpa_passphrase güncelle.
     Başarı durumunda (True, mesaj), aksi halde (False, hata).
@@ -416,8 +429,8 @@ def write_ap_password(new_password: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"hostapd yazılamadı ({path}): {e}"
 
-
 def restart_hostapd() -> Tuple[bool,str]:
+    last = ""
     cmds = [
         ["systemctl","restart","hostapd"],
         ["service","hostapd","restart"],
@@ -432,13 +445,6 @@ def restart_hostapd() -> Tuple[bool,str]:
         except Exception as e:
             last = str(e)
     return False, f"hostapd restart başarısız: {last}"
-
-# =========================== Sinyal / Hızlı çıkış =========================
-def _graceful_exit(signum, frame):
-    print(f"[SYS] Stop signal {signum}, exiting fast.")
-    sys.exit(0)
-signal.signal(signal.SIGTERM, _graceful_exit)
-signal.signal(signal.SIGINT,  _graceful_exit)
 
 # ============================ Yardımcı Fonksiyonlar =======================
 def run(cmd: str) -> subprocess.CompletedProcess:
@@ -492,7 +498,7 @@ def escape_wpa(v: str) -> str:
 
 def wpa_conf_path() -> str:
     p1 = "/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"
-    p2 = "/etc/wpa_sendant/wpa_supplicant.conf"
+    p2 = "/etc/wpa_supplicant/wpa_supplicant.conf"
     return p1 if os.path.exists(p1) else p2
 
 def write_wpa_conf(ssid: str, psk: str, country="TR"):
@@ -964,14 +970,312 @@ def logout():
 
     return redirect(url_for("login"))
 
+# ============================ Wi-Fi Script Yardımcıları ===================
+def _is_posix() -> bool:
+    return os.name == "posix"
+
+def _is_root() -> bool:
+    if not _is_posix():
+        return False
+    try:
+        return os.geteuid() == 0  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+def _have_sudo_noninteractive() -> bool:
+    if not _is_posix():
+        return False
+    try:
+        p = subprocess.run(["sudo", "-n", "true"], capture_output=True, text=True)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+def _run3(cmd: list[str] | str, timeout: int = 30):
+    try:
+        if isinstance(cmd, list):
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        else:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=True)
+        return p.returncode, p.stdout, p.stderr
+    except Exception as e:
+        return 1, "", str(e)
+
+def _wifi_ensure_dir(path: str) -> tuple[bool, str]:
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True, ""
+    except PermissionError:
+        if _have_sudo_noninteractive():
+            code, out, err = _run3(["sudo", "-n", "install", "-d", "-m", "755", path])
+            return (code == 0), (out or err)
+        return False, "Klasör oluşturma izni yok"
+    except Exception as e:
+        return False, str(e)
+
+def _wifi_atomic_write(dest_path: str, content: str) -> tuple[bool, str]:
+    import tempfile, shutil as _sh
+    dest_dir = os.path.dirname(dest_path) or "/"
+    tmp = None
+
+    # Önce hedef dizinde geçici dosya oluşturmayı dene (aynı dosya sistemi için)
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=dest_dir, prefix=".tmp-") as tf:
+            tmp = tf.name
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno())
+    except Exception:
+        # Hedef dizinde başarısız olursa sistem tmp'de oluştur
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tf:
+                tmp = tf.name
+                tf.write(content)
+                tf.flush()
+                os.fsync(tf.fileno())
+        except Exception as e:
+            return False, f"Geçici dosya yazılamadı: {e}"
+
+    # Yedek al (best-effort)
+    try:
+        if os.path.exists(dest_path):
+            _sh.copy2(dest_path, dest_path + ".bak")
+    except Exception:
+        pass
+
+    # Atomik replace dene
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        os.replace(tmp, dest_path)
+        return True, ""
+    except PermissionError:
+        if not _have_sudo_noninteractive():
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            return False, "Yazma izni yok (root veya sudoers gerekli)"
+        code, out, err = _run3(["sudo", "-n", "install", "-D", "-m", "644", tmp, dest_path])
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        if code == 0:
+            return True, ""
+        return False, (err or out)
+    except OSError as e:
+        # Cross-device link hatası (EXDEV - errno 18)
+        if e.errno == errno.EXDEV or e.errno == 18:
+            # Farklı dosya sistemleri arası taşıma - sudo install kullan
+            if _have_sudo_noninteractive():
+                code, out, err = _run3(["sudo", "-n", "install", "-D", "-m", "644", tmp, dest_path])
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+                if code == 0:
+                    return True, ""
+                return False, f"sudo ile yazma başarısız (EXDEV): {err or out}"
+
+            # sudo yoksa manuel kopyalama dene
+            try:
+                with open(dest_path, "w", encoding="utf-8") as out_f, open(tmp, "r", encoding="utf-8") as in_f:
+                    out_f.write(in_f.read())
+                    out_f.flush()
+                    os.fsync(out_f.fileno())
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+                return True, ""
+            except PermissionError:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+                return False, "Yazma izni yok (EXDEV). Root veya sudoers gerekli."
+            except Exception as e2:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+                return False, f"Dosya yazma hatası (EXDEV fallback): {e2}"
+
+        # EXDEV değilse genel hata
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        return False, f"Dosya yazma hatası: {e}"
+    except Exception as e:
+        try:
+            if tmp:
+                os.unlink(tmp)
+        except Exception:
+            pass
+        return False, f"Dosya yazma hatası: {e}"
+
+def _wifi_deploy_exec(path: str, content: str) -> tuple[bool, str]:
+    ok, emsg = _wifi_atomic_write(path, content)
+    if not ok:
+        return False, emsg
+    try:
+        os.chmod(path, 0o755)
+        return True, ""
+    except PermissionError:
+        if _have_sudo_noninteractive():
+            code, out, err = _run3(["sudo", "-n", "chmod", "+x", path])
+            return (code == 0), (err or out)
+        return False, "chmod izni yok"
+    except Exception as e:
+        return False, str(e)
+
+def _opt_noexec() -> bool:
+    if not _is_posix():
+        return False
+    code, out, _ = _run3(["mount"])
+    if code != 0:
+        return False
+    for line in out.splitlines():
+        if " /opt " in line and "noexec" in line:
+            return True
+    return False
+
+def _wifi_install_alt_and_symlink(src: str, alt: str) -> tuple[bool, str]:
+    if _have_sudo_noninteractive():
+        c1, o1, e1 = _run3(["sudo", "-n", "install", "-Dm755", src, alt])
+        if c1 != 0:
+            return False, (e1 or o1)
+        c2, o2, e2 = _run3(["sudo", "-n", "ln", "-sf", alt, src])
+        if c2 != 0:
+            return False, (e2 or o2)
+        return True, ""
+    return False, "sudo yok"
+
+# sed tek tırnak güvenli kaçış yardımı (shell single-quote içinde değer gömmek için)
+# 'foo'bar' -> 'foo'"'"'bar'
+
+def _sed_escape(val: str) -> str:
+    # sed replacement için: & → \& (match tümcesi), sonra single-quote güvenli gömme
+    s = str(val).replace("&", r"\&")
+    return s.replace("'", "'\"'\"'")
+
+def _read_ap_ssid_from_hostapd() -> str:
+    path = hostapd_conf_path()
+    if not os.path.exists(path):
+        return "OrangePiAP"
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                ls = line.strip()
+                if ls.startswith("ssid=") and not ls.startswith("ssid2="):
+                    return ls.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return "OrangePiAP"
+
+def _sta_script_content(ssid: str, psk: str) -> str:
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+LOG=/var/log/wifi_mode.log
+SSID={shlex.quote(ssid)}
+PSK={shlex.quote(psk)}
+
+echo "[sta_mode] $(date '+%F %T')" | tee -a "$LOG"
+systemctl disable --now hostapd dnsmasq wlan0-static.service || true
+ip addr flush dev wlan0 || true
+
+mkdir -p /etc/NetworkManager/conf.d
+if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
+  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf || true
+  [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
+fi
+
+systemctl enable --now NetworkManager || true
+rfkill unblock wifi || true
+nmcli radio wifi on || true
+
+if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
+else
+  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto
+fi
+
+nmcli dev wifi rescan || true
+nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
+
+systemctl restart NetworkManager || true
+
+echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
+"""
+
+def _ap_script_content(ap_ssid: str, ap_psk: str, iface: str = "wlan0") -> str:
+    ap_ssid_esc = _sed_escape(ap_ssid)
+    ap_psk_esc  = _sed_escape(ap_psk)
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+LOG=/var/log/wifi_mode.log
+IFACE={shlex.quote(iface)}
+
+echo "[ap_mode] $(date '+%F %T')" | tee -a "$LOG"
+
+# NetworkManager wlan0'ı yönetmesin
+systemctl stop NetworkManager || true
+mkdir -p /etc/NetworkManager/conf.d
+cat >/etc/NetworkManager/conf.d/unmanaged.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:{shlex.quote(iface)}
+EOF
+systemctl restart NetworkManager || true
+
+# hostapd.conf içeriğinde SSID/PSK'yi garanti et
+if [ -f /etc/hostapd/hostapd.conf ]; then
+  sed -i 's|^ssid=.*|ssid={ap_ssid_esc}|' /etc/hostapd/hostapd.conf || true
+  sed -i 's|^wpa_passphrase=.*|wpa_passphrase={ap_psk_esc}|' /etc/hostapd/hostapd.conf || true
+fi
+if [ -f /etc/default/hostapd ]; then
+  sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd || true
+else
+  echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' >/etc/default/hostapd
+fi
+
+systemctl unmask hostapd || true
+systemctl daemon-reload || true
+systemctl enable --now wlan0-static.service || true
+systemctl enable --now dnsmasq || true
+systemctl enable --now hostapd || true
+
+systemctl restart hostapd || true
+
+echo "[ap_mode OK] $(date '+%F %T')  (SSID: {ap_ssid})" | tee -a "$LOG"
+"""
+
+def _run_script(path: str, timeout: int = 90) -> tuple[bool, str]:
+    cmd = [path]
+    if _is_root():
+        pass
+    elif _have_sudo_noninteractive():
+        cmd = ["sudo", "-n", path]
+    else:
+        return False, "Root/sudo yetkisi yok (sudoers ekleyin)"
+    code, out, err = _run3(cmd, timeout=timeout)
+    if code == 0:
+        return True, out.strip()
+    return False, (err or out)
+
 # --- Wi-Fi ---
 @app.route("/control_wifi")
 @login_required
 def control_wifi():
+    current_mode = get_wifi_mode()
     band, ch = read_ap_band_channel()
     current_password = read_ap_password()
+    # STA sekmesi sadece form gösterir; ağ taraması yapılmaz
     return render_template(
         "wifi_settings_simple.html",
+        mode=current_mode,
         band=band,
         channel=ch,
         channels_24=CHANNELS_24,
@@ -991,7 +1295,26 @@ def apply_band_channel():
     if not ok:
         flash(msg, "danger")
         return redirect(url_for("control_wifi"))
-    # Restart dene
+
+    # Script'i hostapd ile senkronize et ve çalıştır
+    if _is_posix():
+        ap_ssid = _read_ap_ssid_from_hostapd()
+        ap_psk  = read_ap_password()
+        bin_dir = "/opt/lscope/bin"
+        dok, dem = _wifi_ensure_dir(bin_dir)
+        if dok:
+            ap_path = f"{bin_dir}/ap_mode.sh"
+            ok2, em2 = _wifi_deploy_exec(ap_path, _ap_script_content(ap_ssid, ap_psk))
+            if ok2 and _opt_noexec():
+                _wifi_install_alt_and_symlink(ap_path, "/usr/local/sbin/ap_mode.sh")
+            ran, rmsg = _run_script(ap_path, timeout=60)
+            flash((msg + (" — AP script: OK" if ran else f" — AP script hata: {rmsg}")), "success" if ran else "warning")
+            return redirect(url_for("control_wifi"))
+        else:
+            flash(f"{msg} — Script klasörü oluşturulamadı: {dem}", "warning")
+            return redirect(url_for("control_wifi"))
+
+    # POSIX değilse klasik yol
     rok, rmsg = restart_hostapd()
     flash((msg + (" — " + rmsg if rmsg else "")), "success" if rok else "warning")
     return redirect(url_for("control_wifi"))
@@ -1004,8 +1327,71 @@ def apply_password():
     if not ok:
         flash(msg, "danger")
         return redirect(url_for("control_wifi"))
+
+    if _is_posix():
+        ap_ssid = _read_ap_ssid_from_hostapd()
+        bin_dir = "/opt/lscope/bin"
+        dok, dem = _wifi_ensure_dir(bin_dir)
+        if dok:
+            ap_path = f"{bin_dir}/ap_mode.sh"
+            ok2, em2 = _wifi_deploy_exec(ap_path, _ap_script_content(ap_ssid, new_password))
+            if ok2 and _opt_noexec():
+                _wifi_install_alt_and_symlink(ap_path, "/usr/local/sbin/ap_mode.sh")
+            ran, rmsg = _run_script(ap_path, timeout=60)
+            flash((msg + (" — AP script: OK" if ran else f" — AP script hata: {rmsg}")), "success" if ran else "warning")
+            return redirect(url_for("control_wifi"))
+        else:
+            flash(f"{msg} — Script klasörü oluşturulamadı: {dem}", "warning")
+            return redirect(url_for("control_wifi"))
+
     rok, rmsg = restart_hostapd()
     flash((msg + (" — " + rmsg if rmsg else "")), "success" if rok else "warning")
+    return redirect(url_for("control_wifi"))
+
+@app.route("/connect_sta_network", methods=["POST"])
+@login_required
+def connect_sta_network():
+    """STA modunda bir ağa bağlan: script'i üret ve çalıştır."""
+    ssid = request.form.get("ssid", "").strip()
+    password = request.form.get("password", "").strip()
+
+    if not ssid:
+        flash("SSID boş olamaz", "danger")
+        return redirect(url_for("control_wifi"))
+    if len(password) < 8:
+        flash("Şifre en az 8 karakter olmalıdır", "danger")
+        return redirect(url_for("control_wifi"))
+
+    if not _is_posix():
+        flash("Bu işlem yalnızca cihaz üzerinde (Linux) desteklenir.", "danger")
+        return redirect(url_for("control_wifi"))
+
+    # wpa_supplicant'ı da güncelle (yedekli yaklaşım)
+    try:
+        write_wpa_conf(ssid, password)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"wpa_supplicant yazılamadı: {e}")
+
+    bin_dir = "/opt/lscope/bin"
+    dok, dem = _wifi_ensure_dir(bin_dir)
+    if not dok:
+        flash(f"Script klasörü oluşturulamadı: {dem}", "danger")
+        return redirect(url_for("control_wifi"))
+
+    sta_path = f"{bin_dir}/sta_mode.sh"
+    ok2, em2 = _wifi_deploy_exec(sta_path, _sta_script_content(ssid, password))
+    if not ok2:
+        flash(f"sta_mode.sh yazılamadı: {em2}", "danger")
+        return redirect(url_for("control_wifi"))
+
+    if _opt_noexec():
+        _wifi_install_alt_and_symlink(sta_path, "/usr/local/sbin/sta_mode.sh")
+
+    ran, rmsg = _run_script(sta_path, timeout=90)
+    if ran:
+        flash(f"Ayarlar kaydedildi. {ssid} ağına bağlanılıyor…", "success")
+    else:
+        flash(f"Script çalıştırma hatası: {rmsg}", "danger")
     return redirect(url_for("control_wifi"))
 
 # --- Bilgi/yardımcı ---
