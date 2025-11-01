@@ -768,9 +768,11 @@ void loop() {
   }
 
   // Uzun basış (güvenli kapatma GRACE başlat) - recovery ve boot guard sırasında devre dışı
-  if (!shuttingDown && !rpiBootGuardActive && btnState && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
-    Serial.println("Uzun basış algılandı -> Kapatma GRACE başlatılıyor.");
-    pressCounter = 0; // çakışmayı önle
+  // DİKKAT: Bu kontrol SADECE pressCounter 1 iken çalışır. Bu, çoklu basış sekansları sırasında
+  // yanlışlıkla uzun basışın tetiklenmesini engeller.
+  if (!shuttingDown && !rpiBootGuardActive && btnState && (pressCounter <= 1) && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
+    Serial.println("Uzun basış algılandı (yalnızca tek basıştan) -> Kapatma GRACE başlatılıyor.");
+    pressCounter = 0; // Sekansı iptal et ve çakışmayı önle
     beginShutdownGrace();
   }
 
