@@ -82,6 +82,9 @@ uint32_t pressStart   = 0;
 uint8_t  pressCounter = 0;
 uint32_t lastPressEdgeTs = 0;
 
+// YENİ: Düşük batarya nedeniyle kapatmanın aktif olup olmadığını belirtir.
+bool     lowBatteryShutdownActive = false;
+
 // --- Recovery durum ---
 bool     recoveryTriggered = false;
 uint32_t recoveryTriggerTs = 0;
@@ -233,29 +236,38 @@ inline void ledSet(bool on) {
 const uint32_t REC_ON_MS  = 1000;
 const uint32_t REC_OFF_MS = 500;
 
+// YENİ: OTA modu faz zamanları (daha hızlı)
+const uint32_t OTA_ON_MS  = 150;
+const uint32_t OTA_OFF_MS = 150;
+
 // Düşük batarya blink periyodu (ms)
 const uint32_t LB_PHASE_MS = 300;
 
 void ledUpdate(uint32_t now) {
-  // GRACE sırasında LED tamamıyla sönük kalmalı
-  if (shuttingDown) return;
+  // DİKKAT: GRACE sırasında LED'i sadece "uzun basışla" kapatmada sönük tut.
+  // Düşük batarya kapatmasında yanıp sönmeye devam etmesine izin ver.
+  if (shuttingDown && !lowBatteryShutdownActive) {
+    if (ledStateOn) ledSet(false); // Sönük olduğundan emin ol
+    return;
+  }
 
   if (ledMode == LED_LOW_BATT) {
     if (now - ledTs >= LB_PHASE_MS) {
       ledTs = now;
       ledSet(!ledStateOn);
-      if (!ledStateOn) {
-        lowBattCycles++;
-        if (lowBattCycles >= 10) {
-          // düşük bataryada otomatik kapanma tetiklemesi zaten loop içinde yapılacak
-        }
-      }
     }
     return;
   }
 
   if (ledMode == LED_RECORD) {
-    uint32_t phase_duration = ledStateOn ? REC_ON_MS : REC_OFF_MS;
+    // DİKKAT: OTA modu aktifse daha hızlı yanıp sön.
+    uint32_t phase_duration;
+    if (otaModeActive) {
+      phase_duration = ledStateOn ? OTA_ON_MS : OTA_OFF_MS;
+    } else {
+      phase_duration = ledStateOn ? REC_ON_MS : REC_OFF_MS;
+    }
+    
     if (now - ledTs >= phase_duration) {
       ledTs = now;
       ledSet(!ledStateOn);
@@ -263,6 +275,7 @@ void ledUpdate(uint32_t now) {
     return;
   }
 
+  // LED_NORMAL modu
   if (!ledStateOn) ledSet(true);
 }
 
@@ -492,7 +505,11 @@ void beginShutdownGrace() {
 
   Serial.println("=== GRACE Başladı (20s) ===");
 
-  ledSet(false);
+  // DİKKAT: LED'i sadece uzun basışla kapatmada söndür. Düşük batarya yanıp sönmeye devam etsin.
+  if (!lowBatteryShutdownActive) {
+    ledSet(false);
+  }
+  
   if (otaModeActive) exitOtaMode();
   socPwmStop();
   if (recoveryTriggered) {
@@ -513,6 +530,9 @@ void abortShutdownGraceAndResume() {
 
   Serial.println("=== GRACE İptal Edildi: Sistem devam edecek ===");
   shuttingDown = false;
+
+  // YENİ: Düşük batarya kapatma bayrağını temizle
+  lowBatteryShutdownActive = false;
 
   // RPi’yi ŞİMDİ değil; 20 sn SONRA başlatacağız
   // (Önce RPIS'i normal çalışma seviyesine al)
@@ -613,8 +633,8 @@ void setup() {
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_SENSE, INPUT);
   pinMode(BatteryVal, INPUT);
-  digitalWrite(RPI_PIN, HIGH);  // başlangıçta gücü kes (HIGH), birazdan LOW yapılacak
-  digitalWrite(RPIS_PIN, HIGH); // normal durumda HIGH
+  digitalWrite(RPI_PIN, HIGH);
+  digitalWrite(RPIS_PIN, HIGH);
 
   pinMode(PIN_ACTION, OUTPUT);
   digitalWrite(PIN_ACTION, LOW);
@@ -622,41 +642,43 @@ void setup() {
   pinMode(PIN_RECOVERY, OUTPUT);
   digitalWrite(PIN_RECOVERY, LOW);
 
-  // LDO açık
   digitalWrite(PIN_LATCH, HIGH);
   Serial.println("LATCH HIGH: LDO açık.");
 
-  // Açılışta LED sürekli yanık
   ledSet(true);
   ledTs = millis();
   ledMode = LED_NORMAL;
 
-  // PWM/SOC başlat
+  // DÜZELTME: PWM'i başlatmadan önce SOC'yi oku
   socPwmInit();
-
-  // RPi'yi başlatmadan ÖNCE batarya kontrolü
   float initialSoc = primeAndReadInitialSOC();
   Serial.printf("Başlangıç SOC=%.1f%%\n", initialSoc);
 
-  if (initialSoc < 15.0f) {
-    Serial.println("Başlangıç SOC %15'in altında! RPi başlatılmayacak, düşük batarya uyarısı verilecek ve sistem kapanma GRACE akışına geçecek.");
+  // ÖNEMLİ: Eşiği voltaj düşüşüne karşı güvenlik payı içerecek şekilde %20'ye yükseltelim.
+  if (initialSoc < 20.0f) {
+    Serial.println("Başlangıç SOC %20'nin altında! RPi başlatılmayacak, düşük batarya uyarısı verilecek ve sistem kapanacak.");
     ledMode = LED_LOW_BATT;
-    lowBattCycles = 0;
     ledTs = millis();
-    ledSet(true);
-    shutdown_cooldown = 3; // düşük bataryada kısa GRACE
+    ledSet(true); // Yanıp sönmeye başlaması için ilk durumu ayarla
+
+    // Uyarı LED'inin 5 saniye görünür olmasını sağla
+    shutdown_cooldown = 5;
+
+    // Kapatmanın düşük batarya kaynaklı olduğunu işaretle
+    lowBatteryShutdownActive = true;
+
     // GRACE'e doğrudan gir
     beginShutdownGrace();
+    // DİKKAT: return burada kalmalı ki RPi'ı başlatan kod çalışmasın.
     return;
   }
 
   Serial.println("Raspberry Pi başlatılıyor...");
-  digitalWrite(RPI_PIN, LOW);   // güç ver / çalış
+  digitalWrite(RPI_PIN, LOW);
   delay(100);
-  digitalWrite(RPIS_PIN, HIGH); // normal çalışma
+  digitalWrite(RPIS_PIN, HIGH);
   delay(50);
 
-  // Boot koruma süresini başlat
   rpiBootGuardActive = true;
   rpiBootStartTs = millis();
   Serial.printf("Orange Pi boot koruması başladı (30 saniye). Boot tamamlanana kadar GRACE modu engellendi.\n");
@@ -718,11 +740,13 @@ void loop() {
         lowBattCycles = 0;
         ledTs = now;
         ledSet(true);
-        // Düşük batarya tespit edildiğinde GRACE'e geç
+
+        lowBatteryShutdownActive = true;
+        shutdown_cooldown = 5;
+
         beginShutdownGrace();
       }
     } else {
-      // OTA aktifse LED_RECORD öncelikli, değilse recordState'e göre
       LedMode desired = otaModeActive ? LED_RECORD : (recordState ? LED_RECORD : LED_NORMAL);
       if (ledMode != desired) {
         ledMode = desired;
@@ -732,10 +756,10 @@ void loop() {
     }
   }
 
-  // LED çıktısını güncelle (GRACE değilken)
-  if (!shuttingDown) {
-    ledUpdate(now);
-  }
+  // DÜZELTME: LED güncelleme fonksiyonu HER ZAMAN çalışmalı.
+  // Kendi içindeki mantık, `shuttingDown` durumunda ne yapacağını zaten biliyor.
+  // Bu, düşük batarya kapatması sırasında LED'in yanıp sönmesini sağlar.
+  ledUpdate(now);
 
   // --- Buton okuma / debounce ---
   bool raw = digitalRead(PIN_SENSE);
