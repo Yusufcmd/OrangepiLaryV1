@@ -1,3 +1,6 @@
+// Forward declare to satisfy Arduino auto-generated prototypes
+enum ShutdownReason : unsigned char;
+
 /*  Soft-Latch Güç Yönetimi – ESP8266MOD + AP2112K
  *  LATCH: EN hattını tutar (HIGH = açık, LOW = kapalı)
  *  SENSE: Buton algısı (HIGH = basılı, LOW = bırakıldı)
@@ -216,12 +219,23 @@ void updateSocPwm() {
 }
 
 // ===================== LED DURUM MAKİNESİ =====================
+
+// Kapatma işleminin sebebini netleştirmek için
+enum ShutdownReason : uint8_t {
+  USER_REQUEST, // Kullanıcı 5sn uzun basış yaptı
+  LOW_BATTERY   // Sistem bataryanın düşük olduğunu tespit etti
+};
+
+// Led modları
 enum LedMode : uint8_t { LED_NORMAL=0, LED_RECORD=1, LED_LOW_BATT=2 };
 
 LedMode  ledMode = LED_NORMAL;
 bool     ledStateOn = true;
 uint32_t ledTs = 0;
-uint8_t  lowBattCycles = 0;
+
+// Düşük batarya alarmı için durum değişkenleri
+uint8_t  lowBattBlinkCount = 0;
+bool     lowBattInPause    = false;
 
 // GRACE (kapanma bekleme) durumu
 bool     shuttingDown = false;      // true => 20 sn GRACE penceresi aktif
@@ -232,42 +246,76 @@ inline void ledSet(bool on) {
   ledStateOn = on;
 }
 
-// Kayıt modu faz zamanları (ms)
+// --- YENİ: LED Zamanlamaları ---
+// Kayıt modu (Yavaş "Nefes Alma")
 const uint32_t REC_ON_MS  = 1000;
 const uint32_t REC_OFF_MS = 500;
 
-// YENİ: OTA modu faz zamanları (daha hızlı)
-const uint32_t OTA_ON_MS  = 150;
-const uint32_t OTA_OFF_MS = 150;
+// OTA modu (Orta Hızda)
+const uint32_t OTA_ON_MS  = 100;
+const uint32_t OTA_OFF_MS = 100;
 
-// Düşük batarya blink periyodu (ms)
-const uint32_t LB_PHASE_MS = 300;
+// Düşük Batarya Alarm Paterni (3 hızlı yanıp sön + 1 sn duraklama)
+const uint32_t LB_BLINK_ON_MS  = 100;
+const uint32_t LB_BLINK_OFF_MS = 100;
+const uint32_t LB_PAUSE_MS     = 1000;
 
+// ===================== LED DURUM MAKİNESİ (Yeniden Yazıldı) =====================
+// DİKKAT: Bu fonksiyon, farklı LED modlarını ve önceliklerini yöneten bir durum makinesidir.
+// 1. Öncelik: Kullanıcı tarafından başlatılan kapatma -> LED anında söner.
+// 2. Öncelik: Düşük batarya alarmı -> Özel alarm paterni.
+// 3. Öncelik: Diğer modlar (OTA, Kayıt, Normal).
 void ledUpdate(uint32_t now) {
-  // DİKKAT: GRACE sırasında LED'i sadece "uzun basışla" kapatmada sönük tut.
-  // Düşük batarya kapatmasında yanıp sönmeye devam etmesine izin ver.
+  // 1. ÖNCELİK: Kullanıcı bir kapatma başlattıysa, LED ne olursa olsun SÖNÜK kalır.
   if (shuttingDown && !lowBatteryShutdownActive) {
-    if (ledStateOn) ledSet(false); // Sönük olduğundan emin ol
-    return;
+    if (ledStateOn) {
+      ledSet(false);
+    }
+    return; // Başka hiçbir LED mantığını işleme.
   }
 
+  // 2. ÖNCELİK: Düşük Batarya Alarm Modu
   if (ledMode == LED_LOW_BATT) {
-    if (now - ledTs >= LB_PHASE_MS) {
-      ledTs = now;
-      ledSet(!ledStateOn);
+    if (lowBattInPause) {
+      // Duraklama fazındayız. Sürenin dolmasını bekle.
+      if (now - ledTs >= LB_PAUSE_MS) {
+        lowBattInPause = false;
+        lowBattBlinkCount = 0;
+        ledTs = now;
+        ledSet(true); // Yeni yanıp sönme döngüsünü başlat.
+      }
+    } else {
+      // Yanıp sönme fazındayız.
+      uint32_t phase_duration = ledStateOn ? LB_BLINK_ON_MS : LB_BLINK_OFF_MS;
+      if (now - ledTs >= phase_duration) {
+        ledTs = now;
+        ledSet(!ledStateOn);
+
+        // Eğer LED'i şimdi söndürdüysek, bir yanıp sönme tamamlandı.
+        if (!ledStateOn) {
+          lowBattBlinkCount++;
+          // 3 yanıp sönme tamamlandıysa, duraklama fazına geç.
+          if (lowBattBlinkCount >= 3) {
+            lowBattInPause = true;
+          }
+        }
+      }
     }
     return;
   }
 
+  // 3. ÖNCELİK: Kayıt ve OTA Modu
   if (ledMode == LED_RECORD) {
-    // DİKKAT: OTA modu aktifse daha hızlı yanıp sön.
-    uint32_t phase_duration;
+    uint32_t phase_on, phase_off;
     if (otaModeActive) {
-      phase_duration = ledStateOn ? OTA_ON_MS : OTA_OFF_MS;
+      phase_on = OTA_ON_MS;
+      phase_off = OTA_OFF_MS;
     } else {
-      phase_duration = ledStateOn ? REC_ON_MS : REC_OFF_MS;
+      phase_on = REC_ON_MS;
+      phase_off = REC_OFF_MS;
     }
-    
+
+    uint32_t phase_duration = ledStateOn ? phase_on : phase_off;
     if (now - ledTs >= phase_duration) {
       ledTs = now;
       ledSet(!ledStateOn);
@@ -275,8 +323,13 @@ void ledUpdate(uint32_t now) {
     return;
   }
 
-  // LED_NORMAL modu
-  if (!ledStateOn) ledSet(true);
+  // Varsayılan Mod: Normal Çalışma
+  if (ledMode == LED_NORMAL) {
+    if (!ledStateOn) {
+      ledSet(true); // LED sürekli yanık kalmalı.
+    }
+    return;
+  }
 }
 
 // ===================== OTA (Wi-Fi + Web Sunucu) =====================
@@ -495,21 +548,26 @@ void startOtaWeb() {
 // - Bu süre içinde butona tekrar basılırsa iptal edilir ve sistem devam eder
 // - Süre dolarsa RPi güç kesilir ve LATCH LOW ile ESP kapatılır
 
-void beginShutdownGrace() {
+void beginShutdownGrace(ShutdownReason reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   shutdownStartTs = millis();
 
-  // Her ihtimale karşı bekleyen açılış randevusunu iptal et
-  rpiStartPending = false;
-
-  Serial.println("=== GRACE Başladı (20s) ===");
-
-  // DİKKAT: LED'i sadece uzun basışla kapatmada söndür. Düşük batarya yanıp sönmeye devam etsin.
-  if (!lowBatteryShutdownActive) {
-    ledSet(false);
+  // Kapatmanın sebebini kaydet
+  if (reason == LOW_BATTERY) {
+    lowBatteryShutdownActive = true;
+  } else {
+    lowBatteryShutdownActive = false; // Kullanıcı isteği ise bayrağı temizle
   }
-  
+
+  rpiStartPending = false; // Bekleyen açılış randevusunu iptal et
+
+  Serial.println("=== GRACE Başladı ===");
+
+  // DİKKAT: LED mantığı artık ledUpdate içinde yönetiliyor.
+  // Kullanıcı isteğiyle kapatmada ledUpdate LED'i söndürecek.
+  // Düşük bataryada ise yanıp sönmeye devam edecek.
+
   if (otaModeActive) exitOtaMode();
   socPwmStop();
   if (recoveryTriggered) {
@@ -521,8 +579,12 @@ void beginShutdownGrace() {
   recordState = false;
   digitalWrite(PIN_ACTION, LOW);
 
-  Serial.println("Raspberry Pi kapatma sinyali gönderiliyor (RPIS LOW)...");
-  digitalWrite(RPIS_PIN, LOW);
+  // RPIS sinyalini sadece RPi'nin çalıştığı durumlarda gönder
+  // (Açılışta düşük batarya tespit edilirse RPi hiç açılmamış olabilir)
+  if (!lowBatteryShutdownActive || !rpiBootGuardActive) {
+      Serial.println("Raspberry Pi kapatma sinyali gönderiliyor (RPIS LOW)...");
+      digitalWrite(RPIS_PIN, LOW);
+  }
 }
 
 void abortShutdownGraceAndResume() {
@@ -668,7 +730,7 @@ void setup() {
     lowBatteryShutdownActive = true;
 
     // GRACE'e doğrudan gir
-    beginShutdownGrace();
+    beginShutdownGrace(LOW_BATTERY);
     // DİKKAT: return burada kalmalı ki RPi'ı başlatan kod çalışmasın.
     return;
   }
@@ -737,14 +799,14 @@ void loop() {
     if (g_socAvgLatest < 10.0f) {
       if (ledMode != LED_LOW_BATT) {
         ledMode = LED_LOW_BATT;
-        lowBattCycles = 0;
+        lowBattBlinkCount = 0;
         ledTs = now;
         ledSet(true);
 
         lowBatteryShutdownActive = true;
         shutdown_cooldown = 5;
 
-        beginShutdownGrace();
+        beginShutdownGrace(LOW_BATTERY);
       }
     } else {
       LedMode desired = otaModeActive ? LED_RECORD : (recordState ? LED_RECORD : LED_NORMAL);
@@ -797,7 +859,7 @@ void loop() {
   if (!shuttingDown && !rpiBootGuardActive && btnState && (pressCounter <= 1) && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
     Serial.println("Uzun basış algılandı (yalnızca tek basıştan) -> Kapatma GRACE başlatılıyor.");
     pressCounter = 0; // Sekansı iptal et ve çakışmayı önle
-    beginShutdownGrace();
+    beginShutdownGrace(USER_REQUEST);
   }
 
   // Boot guard aktifken uzun basış engellendiğini bildir
