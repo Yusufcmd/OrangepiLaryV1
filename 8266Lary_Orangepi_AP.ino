@@ -91,6 +91,9 @@ bool     lowBatteryShutdownActive = false;
 // YENİ: Kapatma sırasında açma isteği gelirse bunu true yap.
 bool     rebootRequested = false;
 
+// YENİ: Boot sırasında kapatma isteği gelirse bunu true yap.
+bool     shutdownRequestedDuringBoot = false;
+
 // --- Recovery durum ---
 bool     recoveryTriggered = false;
 uint32_t recoveryTriggerTs = 0;
@@ -269,6 +272,14 @@ const uint32_t LB_PAUSE_MS     = 1000;
 // 2. Öncelik: Düşük batarya alarmı -> Özel alarm paterni.
 // 3. Öncelik: Diğer modlar (OTA, Kayıt, Normal).
 void ledUpdate(uint32_t now) {
+  // YENİ ÖNCELİK: Boot sırasında kapatma istenmişse, LED sönük kalmalı.
+  if (rpiBootGuardActive && shutdownRequestedDuringBoot) {
+    if (ledStateOn) {
+      ledSet(false);
+    }
+    return; // Başka hiçbir LED mantığını işleme.
+  }
+
   // 1. ÖNCELİK: Kapatma süreci yönetimi
   if (shuttingDown) {
     // Eğer yeniden başlatma istenmişse, LED'in YANIK kalmasını sağla.
@@ -792,6 +803,13 @@ void loop() {
     if ((now - rpiBootStartTs) >= RPI_BOOT_GUARD_MS) {
       rpiBootGuardActive = false;
       Serial.println("[BOOT GUARD] Orange Pi boot koruması sona erdi. Sistem normal çalışıyor.");
+
+      // KARAR ANI: Boot bitti. Sıraya alınmış bir kapatma görevi var mı?
+      if (shutdownRequestedDuringBoot) {
+        Serial.println("[BOOT GUARD] Boot sırasında istenen kapatma işlemi şimdi başlatılıyor.");
+        shutdownRequestedDuringBoot = false; // Bayrağı temizle.
+        beginShutdownGrace(USER_REQUEST);    // Normal kapatma sürecini başlat.
+      }
     }
   }
 
@@ -876,10 +894,16 @@ void loop() {
         lastPressEdgeTs = now;
         Serial.println("Butona basıldı.");
 
-        if (shuttingDown) {
-          // Kapanma sürecindeyken gelen basış, yeniden başlatma isteğidir.
+        // YENİ MANTIK: Boot sırasında gelen kapatma isteğini iptal etme
+        if (rpiBootGuardActive && shutdownRequestedDuringBoot) {
+          Serial.println("[BOOT GUARD] Sıraya alınmış kapatma isteği iptal edildi.");
+          shutdownRequestedDuringBoot = false;
+          ledSet(true); // Kullanıcıya geri bildirim: LED'i tekrar yak.
+          pressCounter = 0;
+        }
+        else if (shuttingDown) {
           requestRebootDuringShutdown();
-          pressCounter = 0; // Diğer eylemleri tetiklemesin.
+          pressCounter = 0;
         } else {
           pressCounter++;
           Serial.printf("pressCounter = %u\n", pressCounter);
@@ -890,27 +914,24 @@ void loop() {
     }
   }
 
-  // Uzun basış (güvenli kapatma GRACE başlat) - recovery ve boot guard sırasında devre dışı
+  // Uzun basış (güvenli kapatma GRACE başlat)
   // DİKKAT: Bu kontrol SADECE pressCounter 1 iken çalışır. Bu, çoklu basış sekansları sırasında
   // yanlışlıkla uzun basışın tetiklenmesini engeller.
-  if (!shuttingDown && !rpiBootGuardActive && btnState && (pressCounter <= 1) && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
-    Serial.println("Uzun basış algılandı (yalnızca tek basıştan) -> Kapatma GRACE başlatılıyor.");
-    pressCounter = 0; // Sekansı iptal et ve çakışmayı önle
-    beginShutdownGrace(USER_REQUEST);
+  if (!shuttingDown && btnState && (pressCounter <= 1) && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
+    // YENİ MANTIK: Boot sırasında gelen kapatma isteğini sıraya al
+    if (rpiBootGuardActive) {
+      if (!shutdownRequestedDuringBoot) {
+        Serial.println("[BOOT GUARD] Kapatma isteği sıraya alındı. Boot bitince kapatılacak.");
+        shutdownRequestedDuringBoot = true;
+        ledSet(false); // Kullanıcıya geri bildirim: LED'i söndür.
+      }
+    } else {
+      Serial.println("Uzun basış algılandı -> Kapatma GRACE başlatılıyor.");
+      beginShutdownGrace(USER_REQUEST);
+    }
+    pressCounter = 0; // Her durumda sayacı sıfırla.
   }
 
-  // Boot guard aktifken uzun basış engellendiğini bildir
-  if (!shuttingDown && rpiBootGuardActive && btnState && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
-    // Kullanıcıya bilgi ver (1 kez)
-    static bool bootGuardWarningShown = false;
-    if (!bootGuardWarningShown) {
-      uint32_t remaining = (RPI_BOOT_GUARD_MS - (now - rpiBootStartTs)) / 1000;
-      Serial.printf("[BOOT GUARD] Kapatma engellendi. Orange Pi boot oluyor. Kalan süre: %lu saniye\n", remaining);
-      bootGuardWarningShown = true;
-    }
-    // Basış sayacını sıfırla ki tekrar uzun basış kontrolü yapılmasın
-    pressStart = now;
-  }
 
   // 1 sn içinde yeni basış yoksa: SEKANSI DEĞERLENDİR
   if (!shuttingDown && pressCounter > 0 &&
