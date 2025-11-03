@@ -57,7 +57,7 @@ const uint8_t PIN_SENSE  = 5;    // GPIO5 (D1)
 const uint8_t RPI_PIN    = 14;   // D5 (Raspberry güç kontrol / HIGH=kes, LOW=çalış)
 const uint8_t RPIS_PIN   = 12;   // D6 (Raspberry shutdown sinyali / HIGH=normal)
 const uint8_t BatteryVal = A0;
-int shutdown_cooldown = 20;      // GRACE: 20 saniye
+int shutdown_cooldown = 10;      // GRACE: 10 saniye
 
 const uint8_t PIN_LED    = 2;    // LED çıkışı (AKTİF HIGH: HIGH=yanık, LOW=sönük)
 
@@ -87,6 +87,9 @@ uint32_t lastPressEdgeTs = 0;
 
 // YENİ: Düşük batarya nedeniyle kapatmanın aktif olup olmadığını belirtir.
 bool     lowBatteryShutdownActive = false;
+
+// YENİ: Kapatma sırasında açma isteği gelirse bunu true yap.
+bool     rebootRequested = false;
 
 // --- Recovery durum ---
 bool     recoveryTriggered = false;
@@ -252,8 +255,8 @@ const uint32_t REC_ON_MS  = 1000;
 const uint32_t REC_OFF_MS = 500;
 
 // OTA modu (Orta Hızda)
-const uint32_t OTA_ON_MS  = 100;
-const uint32_t OTA_OFF_MS = 100;
+const uint32_t OTA_ON_MS  = 150;
+const uint32_t OTA_OFF_MS = 150;
 
 // Düşük Batarya Alarm Paterni (3 hızlı yanıp sön + 1 sn duraklama)
 const uint32_t LB_BLINK_ON_MS  = 100;
@@ -266,12 +269,49 @@ const uint32_t LB_PAUSE_MS     = 1000;
 // 2. Öncelik: Düşük batarya alarmı -> Özel alarm paterni.
 // 3. Öncelik: Diğer modlar (OTA, Kayıt, Normal).
 void ledUpdate(uint32_t now) {
-  // 1. ÖNCELİK: Kullanıcı bir kapatma başlattıysa, LED ne olursa olsun SÖNÜK kalır.
-  if (shuttingDown && !lowBatteryShutdownActive) {
-    if (ledStateOn) {
-      ledSet(false);
+  // 1. ÖNCELİK: Kapatma süreci yönetimi
+  if (shuttingDown) {
+    // Eğer yeniden başlatma istenmişse, LED'in YANIK kalmasını sağla.
+    if (rebootRequested) {
+      if (!ledStateOn) {
+        ledSet(true);
+      }
     }
-    return; // Başka hiçbir LED mantığını işleme.
+    // Düşük batarya kapatması ise, alarm paterni devam etsin.
+    else if (lowBatteryShutdownActive) {
+      if (lowBattInPause) {
+        // Duraklama fazındayız. Sürenin dolmasını bekle.
+        if (now - ledTs >= LB_PAUSE_MS) {
+          lowBattInPause = false;
+          lowBattBlinkCount = 0;
+          ledTs = now;
+          ledSet(true); // Yeni yanıp sönme döngüsünü başlat.
+        }
+      } else {
+        // Yanıp sönme fazındayız.
+        uint32_t phase_duration = ledStateOn ? LB_BLINK_ON_MS : LB_BLINK_OFF_MS;
+        if (now - ledTs >= phase_duration) {
+          ledTs = now;
+          ledSet(!ledStateOn);
+
+          // Eğer LED'i şimdi söndürdüysek, bir yanıp sönme tamamlandı.
+          if (!ledStateOn) {
+            lowBattBlinkCount++;
+            // 3 yanıp sönme tamamlandıysa, duraklama fazına geç.
+            if (lowBattBlinkCount >= 3) {
+              lowBattInPause = true;
+            }
+          }
+        }
+      }
+    }
+    // Normal kullanıcı kapatması ise, LED'in SÖNÜK kalmasını sağla.
+    else {
+      if (ledStateOn) {
+        ledSet(false);
+      }
+    }
+    return; // Kapatma sürecinde başka LED mantığı işleme.
   }
 
   // 2. ÖNCELİK: Düşük Batarya Alarm Modu
@@ -552,21 +592,20 @@ void beginShutdownGrace(ShutdownReason reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   shutdownStartTs = millis();
+  rebootRequested = false; // Her yeni kapatma sürecinde bu bayrağı sıfırla.
 
-  // Kapatmanın sebebini kaydet
   if (reason == LOW_BATTERY) {
     lowBatteryShutdownActive = true;
   } else {
-    lowBatteryShutdownActive = false; // Kullanıcı isteği ise bayrağı temizle
+    lowBatteryShutdownActive = false;
   }
 
-  rpiStartPending = false; // Bekleyen açılış randevusunu iptal et
+  rpiStartPending = false;
 
   Serial.println("=== GRACE Başladı ===");
 
-  // DİKKAT: LED mantığı artık ledUpdate içinde yönetiliyor.
-  // Kullanıcı isteğiyle kapatmada ledUpdate LED'i söndürecek.
-  // Düşük bataryada ise yanıp sönmeye devam edecek.
+  // KULLANICI GERİ BİLDİRİMİ: LED'i anında söndür.
+  ledSet(false);
 
   if (otaModeActive) exitOtaMode();
   socPwmStop();
@@ -579,8 +618,6 @@ void beginShutdownGrace(ShutdownReason reason) {
   recordState = false;
   digitalWrite(PIN_ACTION, LOW);
 
-  // RPIS sinyalini sadece RPi'nin çalıştığı durumlarda gönder
-  // (Açılışta düşük batarya tespit edilirse RPi hiç açılmamış olabilir)
   if (!lowBatteryShutdownActive || !rpiBootGuardActive) {
       Serial.println("Raspberry Pi kapatma sinyali gönderiliyor (RPIS LOW)...");
       digitalWrite(RPIS_PIN, LOW);
@@ -596,7 +633,7 @@ void abortShutdownGraceAndResume() {
   // YENİ: Düşük batarya kapatma bayrağını temizle
   lowBatteryShutdownActive = false;
 
-  // RPi’yi ŞİMDİ değil; 20 sn SONRA başlatacağız
+  // RPi'yi ŞİMDİ değil; 20 sn SONRA başlatacağız
   // (Önce RPIS'i normal çalışma seviyesine al)
   digitalWrite(RPIS_PIN, HIGH);
 
@@ -605,7 +642,7 @@ void abortShutdownGraceAndResume() {
   ledSet(true);
   ledTs = millis();
 
-  // SOC/PWM’i hızlı stabilize et
+  // SOC/PWM'i hızlı stabilize et
   primeAndReadInitialSOC();
 
   // 20 sn sonra power-cycle ile başlatmayı planla
@@ -614,21 +651,14 @@ void abortShutdownGraceAndResume() {
   Serial.println("[GRACE] RPi başlatma 20 sn ertelendi (power-cycle planlandı).");
 }
 
+void requestRebootDuringShutdown() {
+  if (!shuttingDown || rebootRequested) return; // Sadece kapanırken ve istek zaten yoksa çalışsın.
 
-void finalizePowerOff() {
-  Serial.println("=== GRACE bitti: Güç kesiliyor ===");
+  Serial.println("=== GRACE sırasında AÇMA isteği alındı ===");
+  rebootRequested = true;
 
-  // LED zaten sönük, tekrar işlem yok
-  // RPi güç kesmeye hazırlan
-  Serial.println("Raspberry güç HIGHe çekiliyor (RPI_PIN HIGH)...");
-  digitalWrite(RPI_PIN, HIGH);
-
-  delay(1000); // Güvenlik için 1 sn
-
-  Serial.println("AP2112K LATCH LOW -> Güç kesilecek!");
-  digitalWrite(PIN_LATCH, LOW);
-
-  // Güç kesildiğinde buradan ileri gidilmez
+  // KULLANICI GERİ BİLDİRİMİ: LED'i anında yak.
+  ledSet(true);
 }
 
 // ===================== Çoklu Basışı Ertelenmiş Değerlendirme =====================
@@ -847,8 +877,9 @@ void loop() {
         Serial.println("Butona basıldı.");
 
         if (shuttingDown) {
-          abortShutdownGraceAndResume();
-          pressCounter = 0;
+          // Kapanma sürecindeyken gelen basış, yeniden başlatma isteğidir.
+          requestRebootDuringShutdown();
+          pressCounter = 0; // Diğer eylemleri tetiklemesin.
         } else {
           pressCounter++;
           Serial.printf("pressCounter = %u\n", pressCounter);
@@ -901,26 +932,38 @@ void loop() {
 
   if (shuttingDown) {
     uint32_t elapsed = millis() - shutdownStartTs;
+
+    // AŞAMA 1: Pi'nin kapanmasını bekle (10 saniye)
+    // shutdown_cooldown değişkenini 10 olarak ayarladığınızdan emin olun.
     if (elapsed >= (uint32_t)shutdown_cooldown * 1000UL) {
-      finalizePowerOff();
-      // Güç kesildiği için buradan ilerlenmez
+
+      // AŞAMA 2: Pi'nin gücünü kes ve 2 saniye bekle
+      digitalWrite(RPI_PIN, HIGH);
+      Serial.println("Raspberry Pi gücü kesildi (RPI_PIN HIGH).");
+      delay(2000); // 2 saniyelik bekleme. Bu kısa ve kritik olduğu için delay kabul edilebilir.
+
+      // AŞAMA 3: Karar anı - yeniden başlat mı, tamamen kapat mı?
+      if (rebootRequested) {
+        Serial.println("Yeniden başlatma isteği var. Pi'ye güç veriliyor...");
+        digitalWrite(RPI_PIN, LOW);
+        digitalWrite(RPIS_PIN, HIGH); // Sinyal pinini normale döndür.
+
+        // Sistemi normal çalışma moduna döndür.
+        shuttingDown = false;
+        rebootRequested = false;
+        rpiBootGuardActive = true; // Yeniden boot korumasını başlat.
+        rpiBootStartTs = millis();
+        primeAndReadInitialSOC(); // SOC okumayı yeniden başlat.
+        ledSet(true); // LED zaten yanık ama emin olalım.
+        ledMode = LED_NORMAL;
+
+        Serial.println("Sistem yeniden başlatıldı.");
+
+      } else {
+        Serial.println("Tamamen kapatılıyor. LATCH LOW.");
+        digitalWrite(PIN_LATCH, LOW);
+        // Buradan sonrası çalışmaz, güç kesilir.
+      }
     }
   }
-
-  // === GRACE iptal edildiyse ve 20 sn dolduysa RPi'yi başlat ===
-  if (!shuttingDown && rpiStartPending && ( (int32_t)(millis() - rpiStartDueTs) >= 0 )) {
-    Serial.println("[GRACE] 20 sn doldu: RPi power-cycle ile başlatılıyor...");
-    // Kısa power-cycle: HIGH (gücü kes) -> bekle -> LOW (çalış)
-    digitalWrite(RPI_PIN, HIGH);
-    delay(5000);
-    digitalWrite(RPI_PIN, LOW);
-
-    // Çalışma modunda tut
-    digitalWrite(RPIS_PIN, HIGH);
-
-    rpiStartPending = false;
-    Serial.println("[GRACE] RPi başlangıç sinyali gönderildi.");
-  }
-
-  delay(5);
 }
