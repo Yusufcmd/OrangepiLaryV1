@@ -689,23 +689,29 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Sistem başlatılıyor...");
 
+  // LATCH pini, sistemin açık kalması için ilk olarak HIGH yapılmalı.
   pinMode(PIN_LATCH, OUTPUT);
+  digitalWrite(PIN_LATCH, HIGH);
+  Serial.println("LATCH HIGH: LDO açık.");
+
+  // --- DÜZELTME: RPi pinlerini doğru başlangıç durumuyla yapılandır ---
+  // RPI_PIN'i doğrudan LOW (güç açık) olarak başlatarak kararsız güç döngüsünü engelle.
   pinMode(RPI_PIN, OUTPUT);
+  digitalWrite(RPI_PIN, LOW);     // DOĞRU BAŞLANGIÇ: Güç kesintisiz olarak AÇIK.
+
+  // RPIS_PIN (shutdown sinyali) normal çalışma durumu olan HIGH'da başlamalı.
   pinMode(RPIS_PIN, OUTPUT);
+  digitalWrite(RPIS_PIN, HIGH);
+
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_SENSE, INPUT);
   pinMode(BatteryVal, INPUT);
-  digitalWrite(RPI_PIN, HIGH);
-  digitalWrite(RPIS_PIN, HIGH);
 
   pinMode(PIN_ACTION, OUTPUT);
   digitalWrite(PIN_ACTION, LOW);
 
   pinMode(PIN_RECOVERY, OUTPUT);
   digitalWrite(PIN_RECOVERY, LOW);
-
-  digitalWrite(PIN_LATCH, HIGH);
-  Serial.println("LATCH HIGH: LDO açık.");
 
   ledSet(true);
   ledTs = millis();
