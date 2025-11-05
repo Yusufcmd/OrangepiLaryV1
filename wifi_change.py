@@ -192,42 +192,141 @@ def _install_alt_and_symlink(src_path: str, alt_path: str) -> tuple[bool, str]:
     return False, "sudo erişimi yok"
 
 
+def _bash_quote(val: str) -> str:
+    """Bash için güvenli tek tırnaklı string üret."""
+    s = str(val)
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
 def _sta_script_content(ssid: str, psk: str) -> str:
-    return f"""#!/usr/bin/env bash
+    tpl = r"""#!/usr/bin/env bash
 set -euo pipefail
 LOG=/var/log/wifi_mode.log
-SSID={shlex.quote(ssid)}
-PSK={shlex.quote(psk)}
+SSID={SSID}
+PSK={PSK}
 
-echo "[sta_mode] $(date '+%F %T')" | tee -a "$LOG"
-systemctl disable --now hostapd dnsmasq wlan0-static.service || true
-ip addr flush dev wlan0 || true
+echo "========================================" | tee -a "$LOG"
+echo "[sta_mode START] $(date '+%F %T')" | tee -a "$LOG"
+echo "Target SSID: $SSID" | tee -a "$LOG"
+echo "========================================" | tee -a "$LOG"
 
+# AP modunu durdur
+echo "[1/8] Stopping AP mode services..." | tee -a "$LOG"
+systemctl disable --now hostapd 2>&1 | tee -a "$LOG" || true
+systemctl disable --now dnsmasq 2>&1 | tee -a "$LOG" || true
+systemctl disable --now wlan0-static.service 2>&1 | tee -a "$LOG" || true
+
+echo "[2/8] Flushing wlan0 IP addresses..." | tee -a "$LOG"
+ip addr flush dev wlan0 2>&1 | tee -a "$LOG" || true
+sleep 2
+
+# NetworkManager'ı wlan0'ı yönetmesi için yapılandır
+echo "[3/8] Configuring NetworkManager..." | tee -a "$LOG"
 mkdir -p /etc/NetworkManager/conf.d
 if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
-  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf || true
+  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf 2>&1 | tee -a "$LOG" || true
   [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
 fi
 
-systemctl enable --now NetworkManager
-rfkill unblock wifi || true
-nmcli radio wifi on || true
+echo "[4/8] Starting NetworkManager..." | tee -a "$LOG"
+systemctl enable --now NetworkManager 2>&1 | tee -a "$LOG" || true
+sleep 3
 
+echo "[5/8] Unblocking WiFi..." | tee -a "$LOG"
+rfkill unblock wifi 2>&1 | tee -a "$LOG" || true
+nmcli radio wifi on 2>&1 | tee -a "$LOG" || true
+sleep 2
+
+echo "[6/8] Checking existing connection..." | tee -a "$LOG"
 if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
-  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
+  echo "Connection exists, updating..." | tee -a "$LOG"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG" || true
 else
-  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID"
-  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto
+  echo "Creating new connection..." | tee -a "$LOG"
+  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID" 2>&1 | tee -a "$LOG"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG"
 fi
 
-nmcli dev wifi rescan || true
-nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
+echo "[7/8] Rescanning WiFi networks..." | tee -a "$LOG"
+nmcli dev wifi rescan 2>&1 | tee -a "$LOG" || true
+sleep 3
 
-# İstenen ek: işlem bitiminde NetworkManager'ı yeniden başlat
-sleep 5
-systemctl restart NetworkManager || true
+echo "[7/8] Listing available networks..." | tee -a "$LOG"
+nmcli dev wifi list 2>&1 | tee -a "$LOG" || true
 
-echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
+# Bağlantı deneme fonksiyonu
+connect_wifi() {
+  local attempt=$1
+  echo "[$attempt. deneme] Attempting to connect to $SSID..." | tee -a "$LOG"
+  
+  if nmcli con up "$SSID" 2>&1 | tee -a "$LOG"; then
+    echo "✓ Connection successful on attempt $attempt!" | tee -a "$LOG"
+    return 0
+  fi
+  
+  echo "[$attempt. deneme] First method failed, trying alternative method..." | tee -a "$LOG"
+  if nmcli dev wifi connect "$SSID" password "$PSK" 2>&1 | tee -a "$LOG"; then
+    echo "✓ Connection successful (alternative method) on attempt $attempt!" | tee -a "$LOG"
+    return 0
+  fi
+  
+  echo "✗ Attempt $attempt failed!" | tee -a "$LOG"
+  return 1
+}
+
+# İlk 3 deneme
+echo "[8/8] Starting connection attempts (Round 1)..." | tee -a "$LOG"
+CONNECTED=false
+for i in 1 2 3; do
+  if connect_wifi $i; then
+    CONNECTED=true
+    break
+  fi
+  if [ $i -lt 3 ]; then
+    echo "Waiting 5 seconds before next attempt..." | tee -a "$LOG"
+    sleep 5
+  fi
+done
+
+# Başarısız olduysa NetworkManager restart ve tekrar 3 deneme
+if [ "$CONNECTED" = false ]; then
+  echo "========================================" | tee -a "$LOG"
+  echo "First round failed. Restarting NetworkManager..." | tee -a "$LOG"
+  echo "========================================" | tee -a "$LOG"
+  
+  systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+  sleep 5
+  
+  echo "NetworkManager restarted. Starting connection attempts (Round 2)..." | tee -a "$LOG"
+  for i in 4 5 6; do
+    if connect_wifi $i; then
+      CONNECTED=true
+      break
+    fi
+    if [ $i -lt 6 ]; then
+      echo "Waiting 5 seconds before next attempt..." | tee -a "$LOG"
+      sleep 5
+    fi
+  done
+fi
+
+# Sonuç kontrolü
+echo "========================================" | tee -a "$LOG"
+if [ "$CONNECTED" = true ]; then
+  echo "[sta_mode SUCCESS] $(date '+%F %T')" | tee -a "$LOG"
+  echo "Successfully connected to $SSID" | tee -a "$LOG"
+else
+  echo "[sta_mode FAILED] $(date '+%F %T')" | tee -a "$LOG"
+  echo "Failed to connect to $SSID after all attempts" | tee -a "$LOG"
+  echo "Checking connection status..." | tee -a "$LOG"
+  nmcli con show "$SSID" 2>&1 | tee -a "$LOG" || true
+  nmcli dev status 2>&1 | tee -a "$LOG" || true
+fi
+
+echo "Final connection status:" | tee -a "$LOG"
+nmcli con show --active 2>&1 | tee -a "$LOG" || true
+ip addr show wlan0 2>&1 | tee -a "$LOG" || true
+echo "========================================" | tee -a "$LOG"
 """
 
 
@@ -680,7 +779,7 @@ def apply_band_channel():
     ap_psk = read_ap_password()
     if _is_posix():
         _sync_ap_script(ap_ssid, ap_psk)
-        ran, rmsg = _run_script("/opt/lscope/bin/ap_mode.sh", timeout=60)
+        ran, rmsg = _run_script("/opt/lscope/bin/ap_mode.sh", timeout=90)
 
         # Hostapd restart loglama
         if syslog:
@@ -722,7 +821,7 @@ def apply_password():
     if _is_posix():
         ap_ssid = read_ap_ssid()
         _sync_ap_script(ap_ssid, new_password)
-        ran, rmsg = _run_script("/opt/lscope/bin/ap_mode.sh", timeout=60)
+        ran, rmsg = _run_script("/opt/lscope/bin/ap_mode.sh", timeout=90)
 
         # Hostapd restart loglama
         if syslog:
@@ -799,8 +898,8 @@ def connect_sta_network():
     ap_psk  = read_ap_password()
     _sync_ap_script(ap_ssid, ap_psk)
 
-    # 5) Script'i çalıştır
-    ran, rmsg = _run_script(sta_path, timeout=90)
+    # 5) Script'i doğrudan çalıştır
+    ran, rmsg = _run_script(sta_path, timeout=120)
 
     # Loglama: Sonuç
     if syslog:
