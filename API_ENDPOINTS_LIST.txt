@@ -180,9 +180,25 @@ Token 3 şekilde gönderilebilir:
             "total_size": 157286400,
             "total_size_formatted": "150.00 MB",
             "records_directory": "/home/orangepi/clary/records",
-            "active_session": "oturum5"
+            "active_session": "oturum5",
+            "camera_status": "connected",
+            "device_name": "rtclary20050",
+            "storage": {
+                "path": "/home/orangepi/clary/records",
+                "total": 15999999999,
+                "used": 7340032000,
+                "free": 8659967999,
+                "total_formatted": "14.91 GB",
+                "used_formatted": "6.84 GB",
+                "free_formatted": "8.07 GB",
+                "used_percent": 45.79,
+                "free_percent": 54.21
+            }
         }
     }
+
+    Not: storage alanı, kayıtların yazıldığı disk (SD kart) üzerinde toplam/kullanılan/boş alan ve yüzde değerlerini içerir.
+
 
 13. BATARYA DURUMU (PWM Tabanlı) 🔋
     GET /api/v1/system/battery?token=ZUqwfoe1uyxZvSf2lYzH8fVDRdPP3UO3

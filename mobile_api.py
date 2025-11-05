@@ -16,6 +16,7 @@ from typing import Optional, List, Dict
 from datetime import datetime
 import json
 import socket
+import shutil
 
 from flask import Blueprint, request, jsonify, send_file, session
 
@@ -677,6 +678,30 @@ def api_system_info():
         except Exception:
             pass
 
+        # SD kart/disk kullanım bilgisi (records dizininin bulunduğu dosya sistemi)
+        storage_info = {}
+        try:
+            usage = shutil.disk_usage(RECORDS_DIR)
+            used = usage.total - usage.free
+            def _pct(part, whole):
+                try:
+                    return round((part / whole) * 100.0, 2) if whole else None
+                except Exception:
+                    return None
+            storage_info = {
+                "path": RECORDS_DIR,
+                "total": int(usage.total),
+                "used": int(used),
+                "free": int(usage.free),
+                "total_formatted": format_size(usage.total),
+                "used_formatted": format_size(used),
+                "free_formatted": format_size(usage.free),
+                "used_percent": _pct(used, usage.total),
+                "free_percent": _pct(usage.free, usage.total),
+            }
+        except Exception as e:
+            LOG.warning(f"Disk kullanımı okunamadı: {e}")
+
         return jsonify({
             "success": True,
             "system": {
@@ -687,7 +712,8 @@ def api_system_info():
                 "records_directory": RECORDS_DIR,
                 "active_session": SESSION_NAME,
                 "camera_status": camera_status,
-                "device_name": device_name
+                "device_name": device_name,
+                "storage": storage_info
             }
         }), 200
 

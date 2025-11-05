@@ -298,11 +298,29 @@ Response:
         "total_size_formatted": "150.00 MB",
         "records_directory": "/home/user/OrangepiLaryV1/clary/records",
         "active_session": "oturum5",
-        "camera_status": "connected"
+        "camera_status": "connected",
+        "device_name": "OrangePi-Lary-001",
+        "storage": {
+            "path": "/home/user/OrangepiLaryV1/clary/records",
+            "total": 15999999999,
+            "used": 7340032000,
+            "free": 8659967999,
+            "total_formatted": "14.91 GB",
+            "used_formatted": "6.84 GB",
+            "free_formatted": "8.07 GB",
+            "used_percent": 45.79,
+            "free_percent": 54.21
+        }
     }
 }
 
 Bu endpoint toplam istatistikleri gösterir.
+
+Alanlar:
+- storage.path: Depolama bilgisi alınan kök dizin (kayıtların yazıldığı dizin)
+- storage.total / used / free: Byte cinsinden toplam, kullanılan ve boş alan
+- storage.*_formatted: İnsan okunur formatta değerler (KB/MB/GB)
+- storage.used_percent / free_percent: Yüzde cinsinden kullanım
 
 Kamera Durumları:
   - "connected": Kamera bağlı ve çalışıyor
