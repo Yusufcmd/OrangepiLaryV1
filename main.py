@@ -226,23 +226,31 @@ def check_qr_mode_signal():
                 with camera_lock:
                     if camera is not None:
                         try:
+                            # OpenCV kaynaklarını temizle
+                            cv2.destroyAllWindows()
+                            time.sleep(0.2)
+
+                            # Kamerayı kapat
                             if camera.isOpened():
                                 camera.release()
                             camera.release()  # İkinci kez dene
+
+                            # OpenCV kaynaklarını tekrar temizle
+                            cv2.destroyAllWindows()
                         except Exception as e:
                             logger.warning(f"Kamera release hatası: {e}")
                         finally:
                             camera = None
                         logger.info("✓ Kamera QR modu için ZORLA serbest bırakıldı")
-                # Kameranın tamamen serbest kalması için bekle
-                time.sleep(0.3)
+                # Kameranın tamamen serbest kalması için daha uzun bekle
+                time.sleep(1.0)
             return True
         else:
             # Sinyal dosyası yoksa QR modu pasif
             if qr_mode_active:
                 logger.info("QR modu sinyali temizlendi - kamera yeniden başlatılıyor")
                 qr_mode_active = False
-                time.sleep(0.5)  # QR okuma modunun tamamen bitmesini bekle
+                time.sleep(1.5)  # QR okuma modunun tamamen bitmesini bekle
             return False
     except Exception as e:
         logger.error(f"QR modu sinyal kontrolü hatası: {e}")
