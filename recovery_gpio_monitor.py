@@ -873,11 +873,27 @@ def trigger_recovery():
             logger.info("✓ Factory restore tamamlandı.")
             if result.stdout:
                 logger.debug(f"factoryctl çıktısı:\n{result.stdout}")
+
+            stop_led_blink()
+
+            # Recovery başarılı - Sistem yeniden başlatılıyor
+            logger.info("="*60)
+            logger.info("RECOVERY TAMAMLANDI - SİSTEM YENİDEN BAŞLATILIYOR...")
+            logger.info("="*60)
+            time.sleep(2)
+
+            try:
+                logger.info("Reboot komutu çalıştırılıyor...")
+                subprocess.run(['sudo', 'reboot'], check=False)
+                logger.info("✓ Reboot komutu gönderildi")
+            except Exception as reboot_error:
+                logger.error(f"Reboot komutu hatası: {reboot_error}")
+
+            return True
         else:
             logger.error(f"factoryctl hatası: {result.stderr}")
-
-        stop_led_blink()
-        return result.returncode == 0
+            stop_led_blink()
+            return False
 
     except Exception as e:
         logger.error(f"HATA: Recovery başarısız: {e}", exc_info=True)
