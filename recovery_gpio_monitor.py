@@ -147,11 +147,11 @@ def wait_for_camera_release():
     logger.info("Kameranın serbest kalması bekleniyor...")
     start_time = time.time()
 
-    # İlk önce main uygulamanın kamerayı serbest bırakması için biraz bekle
-    time.sleep(2)
+    # İlk önce main uygulamanın kamerayı serbest bırakması için DAHA UZUN bekle
+    time.sleep(3)
 
     attempts = 0
-    max_attempts = int(CAMERA_RELEASE_TIMEOUT / 0.3)  # 0.3 sn aralıklarla kontrol
+    max_attempts = int(CAMERA_RELEASE_TIMEOUT / 0.5)  # 0.5 sn aralıklarla kontrol
 
     while attempts < max_attempts:
         attempts += 1
@@ -178,44 +178,89 @@ def wait_for_camera_release():
         except Exception as e:
             logger.debug(f"Kamera test hatası: {e} (deneme {attempts}/{max_attempts})")
 
-        time.sleep(0.3)  # Kısa aralıklarla kontrol et
+        time.sleep(0.5)  # Aralığı artırdık
 
     # Timeout oldu - kamerayı zorla serbest bırakmayı dene
     logger.warning(f"⚠ Kamera serbest kalma timeout ({CAMERA_RELEASE_TIMEOUT}s, {attempts} deneme)")
     logger.info("Kamerayı ZORLA serbest bırakma deneniyor...")
 
-    # fuser ile kamerayı kullanan işlemi bul ve sonlandır
+    video_device = f"/dev/video{CAMERA_INDEX}"
+
+    # Yöntem 1: lsof ile kamerayı kullanan işlemleri bul
     try:
-        video_device = f"/dev/video{CAMERA_INDEX}"
+        result = subprocess.run(
+            ['lsof', video_device],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout:
+            logger.info(f"Kamerayı kullanan işlemler:\n{result.stdout}")
+
+            # PID'leri çıkar ve sonlandır
+            lines = result.stdout.strip().split('\n')[1:]  # İlk satır başlık
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 2:
+                    pid = parts[1]
+                    try:
+                        logger.info(f"İşlem sonlandırılıyor: PID {pid}")
+                        subprocess.run(['sudo', 'kill', '-9', pid], timeout=2)
+                    except Exception as e:
+                        logger.warning(f"PID {pid} sonlandırılamadı: {e}")
+
+            time.sleep(2)  # İşlemlerin kapanması için bekle
+    except subprocess.TimeoutExpired:
+        logger.error("lsof komutu timeout oldu")
+    except FileNotFoundError:
+        logger.warning("lsof komutu bulunamadı")
+    except Exception as e:
+        logger.error(f"lsof hatası: {e}")
+
+    # Yöntem 2: fuser ile tekrar dene
+    try:
         result = subprocess.run(
             ['sudo', 'fuser', '-k', video_device],
             capture_output=True,
             text=True,
             timeout=5
         )
-        if result.returncode == 0 or "killed" in result.stderr.lower():
-            logger.info(f"✓ Kamera cihazını ({video_device}) kullanan işlemler sonlandırıldı")
-            time.sleep(1)  # İşlemlerin tamamen kapanması için bekle
-
-            # Tekrar dene
-            try:
-                test_cap = cv2.VideoCapture(CAMERA_INDEX)
-                if test_cap.isOpened():
-                    ret, frame = test_cap.read()
-                    test_cap.release()
-                    if ret and frame is not None:
-                        logger.info("✓ Kamera zorla serbest bırakıldı ve kullanılabilir durumda")
-                        return True
-            except Exception as e:
-                logger.debug(f"Zorla serbest bırakma sonrası test hatası: {e}")
-        else:
-            logger.warning(f"fuser sonucu: {result.stderr}")
-    except subprocess.TimeoutExpired:
-        logger.error("fuser komutu timeout oldu")
+        if result.returncode == 0:
+            logger.info(f"fuser ile işlemler sonlandırıldı")
+            time.sleep(1)
     except Exception as e:
-        logger.error(f"Zorla serbest bırakma hatası: {e}")
+        logger.debug(f"fuser hatası: {e}")
 
-    logger.error("✗ Kamera serbest bırakılamadı")
+    # Yöntem 3: Video cihazını reset et
+    try:
+        logger.info("Video cihazını reset etmeye çalışıyoruz...")
+        # v4l2-ctl ile cihazı reset et
+        subprocess.run(
+            ['v4l2-ctl', '--device', video_device, '--set-fmt-video=width=640,height=480'],
+            capture_output=True,
+            timeout=3
+        )
+        time.sleep(1)
+    except Exception as e:
+        logger.debug(f"v4l2-ctl hatası: {e}")
+
+    # Son kontrol
+    logger.info("Son kontrol yapılıyor...")
+    for final_attempt in range(3):
+        try:
+            test_cap = cv2.VideoCapture(CAMERA_INDEX)
+            if test_cap.isOpened():
+                ret, frame = test_cap.read()
+                test_cap.release()
+                if ret and frame is not None:
+                    logger.info(f"✓ Kamera zorla serbest bırakıldı ve kullanılabilir durumda (deneme {final_attempt + 1})")
+                    return True
+            test_cap.release()
+        except Exception as e:
+            logger.debug(f"Son kontrol hatası (deneme {final_attempt + 1}): {e}")
+        time.sleep(1)
+
+    logger.error("✗ Kamera serbest bırakılamadı - TÜM YÖNTEMLER BAŞARISIZ")
     return False
 
 # ==================== LED KONTROLÜ ====================

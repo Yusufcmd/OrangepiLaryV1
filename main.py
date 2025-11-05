@@ -916,25 +916,29 @@ def generate_frames():
 
     while True:
         try:
-            # QR okuma modu aktifse, kamerayı serbest bırak ve bekle
+            # QR okuma modu aktifse, kamerayı TAMAMEN serbest bırak ve SADECE placeholder gönder
             if qr_mode_active:
-                if camera is not None and camera.isOpened():
-                    with camera_lock:
-                        if camera is not None:
+                # Kamera açıksa ZORLA kapat
+                with camera_lock:
+                    if camera is not None:
+                        try:
                             camera.release()
-                            camera = None
+                        except Exception:
+                            pass
+                        camera = None
                 ph = create_placeholder("QR Kod Okunuyor...")
                 _, buf = cv2.imencode(".jpg", ph)
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-                eventlet.sleep(0.2)
+                eventlet.sleep(0.5)  # Daha uzun bekleme - kamerayı rahat bırak
                 continue
 
+            # QR modu değilse normal işlem
             if camera is None or not camera.isOpened():
                 now = time.time()
                 if now - connection_retry_timer >= 1:
                     connection_retry_timer = now
                     with camera_lock:
-                        if not qr_mode_active:
+                        if not qr_mode_active:  # Tekrar kontrol et
                             init_camera()
                 if camera is None or not camera.isOpened():
                     ph = create_placeholder("Kamera bekleniyor...")
@@ -950,6 +954,13 @@ def generate_frames():
                 eventlet.sleep(0.04); continue
 
             if not ok or frame is None:
+                # QR modu kontrolü - kamera okuma hatası varsa
+                if qr_mode_active:
+                    if camera is not None:
+                        camera.release()
+                        camera = None
+                    eventlet.sleep(0.2)
+                    continue
                 camera.release(); camera = None
                 ph = create_placeholder("Kare yok — yeniden bağlanılıyor…")
                 _, buf = cv2.imencode(".jpg", ph)
@@ -970,7 +981,8 @@ def generate_frames():
 
         except Exception as e:
             error_count += 1; logger.error(f"generate_frames hata {error_count}/{max_errors}: {e}")
-            if camera is not None: camera.release()
+            if camera is not None:
+                camera.release()
             camera = None
             if error_count >= max_errors:
                 logger.warning("Çok hata — 3 sn bekleme"); eventlet.sleep(3); error_count = 0
