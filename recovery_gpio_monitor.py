@@ -35,7 +35,7 @@ except ImportError as e:
 
 # Kamera kontrol sinyali için dosya yolu
 CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
-CAMERA_RELEASE_TIMEOUT = 5  # Kameranın serbest kalması için max bekleme süresi (saniye)
+CAMERA_RELEASE_TIMEOUT = 10  # Kameranın serbest kalması için max bekleme süresi (saniye) - arttırıldı
 
 # ==================== LOGLAMA YAPILANDIRMA ====================
 LOG_FILE = "/home/rise/clary/recoverylog/recovery.log"
@@ -147,24 +147,40 @@ def wait_for_camera_release():
     logger.info("Kameranın serbest kalması bekleniyor...")
     start_time = time.time()
 
-    while (time.time() - start_time) < CAMERA_RELEASE_TIMEOUT:
-        # Kamera serbest mi kontrol et (basit bir yöntem: kısa bir süre bekle)
-        time.sleep(0.5)
+    # İlk önce main uygulamanın kamerayı serbest bırakması için biraz bekle
+    time.sleep(2)
+
+    attempts = 0
+    max_attempts = int(CAMERA_RELEASE_TIMEOUT / 0.3)  # 0.3 sn aralıklarla kontrol
+
+    while attempts < max_attempts:
+        attempts += 1
+        elapsed = time.time() - start_time
 
         # Kamerayı test et
         try:
             test_cap = cv2.VideoCapture(CAMERA_INDEX)
             if test_cap.isOpened():
+                # Kamera açılabildi, gerçekten kullanılabilir mi kontrol et
+                ret, frame = test_cap.read()
                 test_cap.release()
-                logger.info(f"✓ Kamera serbest (bekleme: {time.time() - start_time:.1f}s)")
-                return True
-            test_cap.release()
-        except Exception:
-            pass
 
-        time.sleep(0.5)
+                if ret and frame is not None:
+                    logger.info(f"✓ Kamera serbest ve kullanılabilir (bekleme: {elapsed:.1f}s)")
+                    # Kameranın tamamen serbest kalması için kısa bir süre daha bekle
+                    time.sleep(0.5)
+                    return True
+                else:
+                    logger.debug(f"Kamera açıldı ama frame okunamadı (deneme {attempts}/{max_attempts})")
+            else:
+                test_cap.release()
+                logger.debug(f"Kamera açılamadı (deneme {attempts}/{max_attempts})")
+        except Exception as e:
+            logger.debug(f"Kamera test hatası: {e} (deneme {attempts}/{max_attempts})")
 
-    logger.warning(f"⚠ Kamera serbest kalma timeout ({CAMERA_RELEASE_TIMEOUT}s)")
+        time.sleep(0.3)  # Kısa aralıklarla kontrol et
+
+    logger.warning(f"⚠ Kamera serbest kalma timeout ({CAMERA_RELEASE_TIMEOUT}s, {attempts} deneme)")
     return False
 
 # ==================== LED KONTROLÜ ====================

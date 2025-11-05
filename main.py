@@ -247,7 +247,7 @@ def qr_signal_monitor_loop():
             check_qr_mode_signal()
         except Exception as e:
             logger.error(f"QR sinyal monitör hatası: {e}")
-        time.sleep(0.5)  # 500ms aralıklarla kontrol et
+        time.sleep(0.1)  # 100ms aralıklarla kontrol et (daha hızlı tepki)
     logger.info("QR sinyal monitörü durdu")
 
 # ============================== Model & Auth ==============================
