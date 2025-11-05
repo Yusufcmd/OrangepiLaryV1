@@ -7,6 +7,13 @@ from flask_wtf import CSRFProtect
 import subprocess, shlex, os, pathlib, sys, tempfile, shutil, errno
 from typing import Union, List, Tuple
 
+# Merkezi loglama sistemi
+try:
+    import system_logger as syslog
+except Exception as e:
+    syslog = None
+    print(f"Warning: system_logger yüklenemedi: {e}")
+
 # CSRF token üretici (mevcutsa)
 try:
     from flask_wtf.csrf import generate_csrf
@@ -192,33 +199,80 @@ LOG=/var/log/wifi_mode.log
 SSID={shlex.quote(ssid)}
 PSK={shlex.quote(psk)}
 
-echo "[sta_mode] $(date '+%F %T')" | tee -a "$LOG"
-systemctl disable --now hostapd dnsmasq wlan0-static.service || true
-ip addr flush dev wlan0 || true
+echo "========================================" | tee -a "$LOG"
+echo "[sta_mode START] $(date '+%F %T')" | tee -a "$LOG"
+echo "Target SSID: $SSID" | tee -a "$LOG"
+echo "========================================" | tee -a "$LOG"
 
+# AP modunu durdur
+echo "[1/8] Stopping AP mode services..." | tee -a "$LOG"
+systemctl disable --now hostapd 2>&1 | tee -a "$LOG" || true
+systemctl disable --now dnsmasq 2>&1 | tee -a "$LOG" || true
+systemctl disable --now wlan0-static.service 2>&1 | tee -a "$LOG" || true
+
+echo "[2/8] Flushing wlan0 IP addresses..." | tee -a "$LOG"
+ip addr flush dev wlan0 2>&1 | tee -a "$LOG" || true
+sleep 2
+
+# NetworkManager'ı wlan0'ı yönetmesi için yapılandır
+echo "[3/8] Configuring NetworkManager..." | tee -a "$LOG"
 mkdir -p /etc/NetworkManager/conf.d
 if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
-  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf || true
+  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf 2>&1 | tee -a "$LOG" || true
   [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
 fi
 
-systemctl enable --now NetworkManager || true
-rfkill unblock wifi || true
-nmcli radio wifi on || true
+echo "[4/8] Starting NetworkManager..." | tee -a "$LOG"
+systemctl enable --now NetworkManager 2>&1 | tee -a "$LOG" || true
+sleep 3
 
+echo "[5/8] Unblocking WiFi..." | tee -a "$LOG"
+rfkill unblock wifi 2>&1 | tee -a "$LOG" || true
+nmcli radio wifi on 2>&1 | tee -a "$LOG" || true
+sleep 2
+
+echo "[6/8] Checking existing connection..." | tee -a "$LOG"
 if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
-  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
+  echo "Connection exists, updating..." | tee -a "$LOG"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG" || true
 else
-  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID"
-  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto
+  echo "Creating new connection..." | tee -a "$LOG"
+  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID" 2>&1 | tee -a "$LOG"
+  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG"
 fi
 
-nmcli dev wifi rescan || true
-nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
+echo "[7/8] Rescanning WiFi networks..." | tee -a "$LOG"
+nmcli dev wifi rescan 2>&1 | tee -a "$LOG" || true
+sleep 3
 
-systemctl restart NetworkManager || true
+echo "[7/8] Listing available networks..." | tee -a "$LOG"
+nmcli dev wifi list 2>&1 | tee -a "$LOG" || true
 
-echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
+echo "[8/8] Attempting to connect to $SSID..." | tee -a "$LOG"
+if nmcli con up "$SSID" 2>&1 | tee -a "$LOG"; then
+  echo "✓ Connection successful!" | tee -a "$LOG"
+else
+  echo "First attempt failed, trying alternative method..." | tee -a "$LOG"
+  if nmcli dev wifi connect "$SSID" password "$PSK" 2>&1 | tee -a "$LOG"; then
+    echo "✓ Connection successful (alternative method)!" | tee -a "$LOG"
+  else
+    echo "✗ Connection failed!" | tee -a "$LOG"
+    echo "Checking connection status..." | tee -a "$LOG"
+    nmcli con show "$SSID" 2>&1 | tee -a "$LOG" || true
+    nmcli dev status 2>&1 | tee -a "$LOG" || true
+  fi
+fi
+
+echo "[9/9] Restarting NetworkManager..." | tee -a "$LOG"
+systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+sleep 3
+
+echo "========================================" | tee -a "$LOG"
+echo "[sta_mode END] $(date '+%F %T')" | tee -a "$LOG"
+echo "Final connection status:" | tee -a "$LOG"
+nmcli con show --active 2>&1 | tee -a "$LOG" || true
+ip addr show wlan0 2>&1 | tee -a "$LOG" || true
+echo "========================================" | tee -a "$LOG"
 """
 
 
@@ -645,7 +699,23 @@ def apply_band_channel():
         channel = int(request.form.get("channel", "6"))
     except Exception:
         channel = 6
+
+    # Kullanıcı bilgisi al
+    user = User.query.get(session.get("uid"))
+    username = user.username if user else "unknown"
+
     ok, msg = write_ap_band_channel(band, channel)
+
+    # Loglama
+    if syslog:
+        syslog.log_wifi_change(
+            band=band,
+            channel=channel,
+            success=ok,
+            error=None if ok else msg,
+            user=username
+        )
+
     if not ok:
         flash(msg, "error")
         return redirect(url_for("index"))
@@ -656,6 +726,11 @@ def apply_band_channel():
     if _is_posix():
         _sync_ap_script(ap_ssid, ap_psk)
         ran, rmsg = _run_script("/opt/lscope/bin/ap_mode.sh", timeout=60)
+
+        # Hostapd restart loglama
+        if syslog:
+            syslog.log_hostapd_restart(success=ran, message=rmsg if not ran else None, user=username)
+
         flash((msg + (" — AP script: OK" if ran else f" — AP script hata: {rmsg}")), "success" if ran else "warning")
         return redirect(url_for("index"))
 
@@ -668,7 +743,22 @@ def apply_band_channel():
 @login_required
 def apply_password():
     new_password = request.form.get("password", "").strip()
+
+    # Kullanıcı bilgisi al
+    user = User.query.get(session.get("uid"))
+    username = user.username if user else "unknown"
+
     ok, msg = write_ap_password(new_password)
+
+    # Loglama
+    if syslog:
+        syslog.log_wifi_change(
+            password_changed=True,
+            success=ok,
+            error=None if ok else msg,
+            user=username
+        )
+
     if not ok:
         flash(msg, "error")
         return redirect(url_for("index"))
@@ -678,6 +768,11 @@ def apply_password():
         ap_ssid = read_ap_ssid()
         _sync_ap_script(ap_ssid, new_password)
         ran, rmsg = _run_script("/opt/lscope/bin/ap_mode.sh", timeout=60)
+
+        # Hostapd restart loglama
+        if syslog:
+            syslog.log_hostapd_restart(success=ran, message=rmsg if not ran else None, user=username)
+
         flash((msg + (" — AP script: OK" if ran else f" — AP script hata: {rmsg}")), "success" if ran else "warning")
         return redirect(url_for("index"))
 
@@ -695,18 +790,36 @@ def connect_sta_network():
     ssid = (request.form.get("ssid") or "").strip()
     psk  = (request.form.get("password") or "").strip()
 
+    # Kullanıcı bilgisi al
+    user = User.query.get(session.get("uid"))
+    username = user.username if user else "unknown"
+
     if not ssid:
         flash("SSID zorunludur", "error")
+        if syslog:
+            syslog.log_wifi_change(ssid=ssid, success=False, error="SSID boş", user=username)
         return redirect(url_for("index"))
     if len(psk) < 8:
         flash("Şifre en az 8 karakter olmalıdır", "error")
+        if syslog:
+            syslog.log_wifi_change(ssid=ssid, success=False, error="Şifre çok kısa", user=username)
         return redirect(url_for("index"))
+
+    # Loglama: STA moduna geçiş başlatılıyor
+    if syslog:
+        syslog.log_event("wifi", "STA_MODE_START", {
+            "ssid": ssid,
+            "user": username,
+            "action": "Attempting to connect to network"
+        }, "INFO")
 
     # 1) /opt/lscope/bin altını garanti et
     bin_dir = "/opt/lscope/bin"
     ok, emsg = _ensure_dir(bin_dir)
     if not ok:
         flash(f"Script klasörü oluşturulamadı: {emsg}", "error")
+        if syslog:
+            syslog.log_wifi_change(ssid=ssid, success=False, error=f"Dizin hatası: {emsg}", user=username)
         return redirect(url_for("index"))
 
     # 2) sta_mode.sh içeriğini yaz
@@ -715,6 +828,8 @@ def connect_sta_network():
     ok, emsg = _deploy_file_executable(sta_path, content)
     if not ok:
         flash(f"sta_mode.sh yazılamadı: {emsg}", "error")
+        if syslog:
+            syslog.log_wifi_change(ssid=ssid, success=False, error=f"Script yazma hatası: {emsg}", user=username)
         return redirect(url_for("index"))
 
     # 3) /opt noexec ise alternatif konuma taşı ve symlink bırak
@@ -731,6 +846,30 @@ def connect_sta_network():
 
     # 5) Script'i çalıştır
     ran, rmsg = _run_script(sta_path, timeout=90)
+
+    # Loglama: Sonuç
+    if syslog:
+        syslog.log_wifi_change(
+            ssid=ssid,
+            success=ran,
+            error=None if ran else rmsg,
+            user=username
+        )
+
+        if ran:
+            syslog.log_event("wifi", "STA_MODE_SUCCESS", {
+                "ssid": ssid,
+                "user": username,
+                "message": "STA mode script executed successfully"
+            }, "INFO")
+        else:
+            syslog.log_event("wifi", "STA_MODE_FAILED", {
+                "ssid": ssid,
+                "user": username,
+                "error": rmsg,
+                "message": "STA mode script execution failed"
+            }, "ERROR")
+
     if ran:
         flash("STA moduna geçiş başlatıldı. Cihaz ağa bağlanmayı deniyor.", "success")
     else:
