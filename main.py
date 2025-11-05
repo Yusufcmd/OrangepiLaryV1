@@ -1391,6 +1391,46 @@ def _run_script(path: str, timeout: int = 90) -> tuple[bool, str]:
         return True, out.strip()
     return False, (err or out)
 
+def _schedule_nm_restart(delay_seconds: int = 15) -> None:
+    """NetworkManager'ı gecikmeli olarak yeniden başlat.
+    Eventlet varsa eventlet.spawn_after ile, yoksa threading ile çalıştırır.
+    Root ya da sudo -n erişimi varsa çalışır; aksi halde yalnızca log yazar.
+    """
+    try:
+        if not _is_posix():
+            logger.info("NM restart planlanmadı: POSIX değil")
+            return
+
+        def _job():
+            try:
+                logger.info(f"NM restart {delay_seconds}s sonra tetiklenecek…")
+                time.sleep(delay_seconds)
+                cmd = ["systemctl", "restart", "NetworkManager"]
+                if _is_root():
+                    pass
+                elif _have_sudo_noninteractive():
+                    cmd = ["sudo", "-n"] + cmd
+                else:
+                    logger.warning("NM restart atlandı: sudo/root izni yok")
+                    return
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if p.returncode == 0:
+                    logger.info("NM restart başarıyla tamamlandı")
+                else:
+                    logger.warning(f"NM restart başarısız: {p.stderr or p.stdout}")
+            except Exception as e:
+                logger.error(f"NM restart görevi hatası: {e}")
+
+        # Eventlet varsa onun zamanlayıcısını kullan
+        try:
+            import eventlet as _ev
+            _ev.spawn_n(_job)
+        except Exception:
+            # Fallback: klasik thread
+            threading.Thread(target=_job, daemon=True).start()
+    except Exception as e:
+        logger.error(f"NM restart planlama hatası: {e}")
+
 # --- Wi-Fi ---
 @app.route("/control_wifi")
 @login_required
@@ -1434,6 +1474,8 @@ def apply_band_channel():
             if ok2 and _opt_noexec():
                 _wifi_install_alt_and_symlink(ap_path, "/usr/local/sbin/ap_mode.sh")
             ran, rmsg = _run_script(ap_path, timeout=60)
+            # GECİKMELİ NM RESTART
+            _schedule_nm_restart(15)
             flash((msg + (" — AP script: OK" if ran else f" — AP script hata: {rmsg}")), "success" if ran else "warning")
             return redirect(url_for("control_wifi"))
         else:
@@ -1464,6 +1506,8 @@ def apply_password():
             if ok2 and _opt_noexec():
                 _wifi_install_alt_and_symlink(ap_path, "/usr/local/sbin/ap_mode.sh")
             ran, rmsg = _run_script(ap_path, timeout=60)
+            # GECİKMELİ NM RESTART
+            _schedule_nm_restart(15)
             flash((msg + (" — AP script: OK" if ran else f" — AP script hata: {rmsg}")), "success" if ran else "warning")
             return redirect(url_for("control_wifi"))
         else:
@@ -1514,6 +1558,8 @@ def connect_sta_network():
         _wifi_install_alt_and_symlink(sta_path, "/usr/local/sbin/sta_mode.sh")
 
     ran, rmsg = _run_script(sta_path, timeout=90)
+    # GECİKMELİ NM RESTART
+    _schedule_nm_restart(15)
     if ran:
         flash(f"Ayarlar kaydedildi. {ssid} ağına bağlanılıyor…", "success")
     else:
@@ -1760,7 +1806,7 @@ def update_system():
             # 6. checkout default branch
             logger.info(f"{default_branch} branch'e geçiliyor...")
             checkout_result = subprocess.run(
-                ["git", "-C", target_dir, "checkout", "-B", default_branch, f"origin/{default_branch}"],
+                ["git", "-C", "checkout", "-B", default_branch, f"origin/{default_branch}"],
                 capture_output=True,
                 text=True,
                 timeout=30

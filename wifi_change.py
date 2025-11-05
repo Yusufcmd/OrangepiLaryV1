@@ -438,19 +438,6 @@ def _run_script(script_path: str, timeout: int = 90) -> tuple[bool, str]:
         return True, out.strip()
     return False, (err or out)
 
-# ---- HOSTAPD YARDIMCILARI ----
-
-def hostapd_conf_path() -> str:
-    """hostapd.conf dosyasının yolunu döndür."""
-    return "/etc/hostapd/hostapd.conf"
-
-def read_ap_band_channel() -> tuple[str, int]:
-    """hostapd.conf'tan mevcut band ve kanalı oku."""
-    path = hostapd_conf_path()
-    band = "2.4"
-    ch = 6
-    if not os.path.exists(path):
-        return band, ch
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -823,9 +810,7 @@ def apply_band_channel():
     return redirect(url_for("index"))
 
 # Şifre değiştirme route'u
-@app.route("/apply_password", methods=["POST"])
-@login_required
-def apply_password():
+
     new_password = request.form.get("password", "").strip()
 
     # Kullanıcı bilgisi al
@@ -867,9 +852,7 @@ def apply_password():
 @app.route("/connect_sta_network", methods=["POST"])
 @login_required
 def connect_sta_network():
-    if not _is_posix():
-        flash("Bu işlem yalnızca cihaz üzerinde (Linux) desteklenir", "error")
-        return redirect(url_for("index"))
+
 
     ssid = (request.form.get("ssid") or "").strip()
     psk  = (request.form.get("password") or "").strip()
@@ -947,9 +930,6 @@ def connect_sta_network():
                 "message": "STA mode script executed successfully"
             }, "INFO")
         else:
-            syslog.log_event("wifi", "STA_MODE_FAILED", {
-                "ssid": ssid,
-                "user": username,
                 "error": rmsg,
                 "message": "STA mode script execution failed"
             }, "ERROR")
