@@ -248,7 +248,7 @@ if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
 fi
 systemctl enable --now NetworkManager 2>&1 | tee -a "$LOG" || true
 sleep 2
-systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+sudo systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
 nm_wait
 nmcli general status 2>&1 | tee -a "$LOG" || true
 
@@ -274,7 +274,7 @@ fi
 echo "[6/8] Reloading NM connections and restarting NM..." | tee -a "$LOG"
 nmcli con reload 2>&1 | tee -a "$LOG" || true
 nmcli general reload 2>&1 | tee -a "$LOG" || true
-systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+sudo systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
 nm_wait
 
 # Ağları tarayıp bağlanmayı dene
@@ -323,7 +323,7 @@ done
 echo "Checking if connection established..." | tee -a "$LOG"
 if [ "$CONNECTED" = false ]; then
   echo "First round failed. Restarting NetworkManager and retrying..." | tee -a "$LOG"
-  systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+  sudo systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
   nm_wait
   for i in 4 5 6; do
     if connect_wifi $i; then
@@ -396,7 +396,7 @@ cat >/etc/NetworkManager/conf.d/unmanaged.conf <<EOF
 [keyfile]
 unmanaged-devices=interface-name:{shlex.quote(iface)}
 EOF
-systemctl restart NetworkManager || true
+sudo systemctl restart NetworkManager || true
 
 # hostapd.conf içeriğinde SSID/PSK'yi garanti et
 if [ -f /etc/hostapd/hostapd.conf ]; then
