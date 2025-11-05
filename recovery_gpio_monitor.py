@@ -551,26 +551,78 @@ def parse_qr_data(qr_data):
         logger.info(f"AP Mode yapılandırması: {config}")
         return config, None
 
-    # STA Mode: WIFI:T:WPA;S:MySSID;P:MyPassword;; veya WIFI:T:WPA;S:MySSID;P:MyPassword;H:false;;
-    # Daha esnek regex - opsiyonel H parametresi ve fazladan alanları destekler
-    sta_pattern = r'^WIFI:T:([^;]+);S:([^;]+);P:([^;]+);.*;;$'
-    sta_match = re.match(sta_pattern, qr_data)
+    # STA Mode: WIFI:T:WPA;S:MySSID;P:MyPassword;; veya WIFI:T:nopass;S:MySSID;;
+    # WiFi QR standardını destekleyen esnek parsing
+    if qr_data.startswith('WIFI:') and qr_data.endswith(';;'):
+        logger.debug("WiFi QR kodu tespit edildi, parse ediliyor...")
 
-    if sta_match:
-        security = sta_match.group(1)
-        ssid = sta_match.group(2)
-        password = sta_match.group(3)
+        # Kaçış karakterlerini çöz
+        def unescape_wifi(s):
+            """WiFi QR kaçış karakterlerini çöz"""
+            s = s.replace(r'\;', '\x00')  # Geçici placeholder
+            s = s.replace(r'\:', '\x01')
+            s = s.replace(r'\,', '\x02')
+            s = s.replace(r'\\', '\x03')
+            return s
 
-        logger.debug(f"STA Mode tespit edildi: SSID={ssid}, Security={security}")
+        def restore_wifi(s):
+            """Placeholder'ları geri yükle"""
+            s = s.replace('\x00', ';')
+            s = s.replace('\x01', ':')
+            s = s.replace('\x02', ',')
+            s = s.replace('\x03', '\\')
+            return s
 
-        config = {
-            'mode': 'sta',
-            'ssid': ssid,
-            'password': password,
-            'security': security
-        }
-        logger.info(f"STA Mode yapılandırması: SSID={ssid}, Security={security}")
-        return config, None
+        # Parametreleri parse et
+        params = {}
+        try:
+            # WIFI: prefix ve ;; suffix'i kaldır
+            content = qr_data[5:-2]  # "WIFI:" ve ";;" çıkar
+
+            # Kaçış karakterlerini geçici olarak değiştir
+            content_escaped = unescape_wifi(content)
+
+            # Parametreleri ayır (kaçışsız ; ile)
+            parts = content_escaped.split(';')
+
+            for part in parts:
+                if ':' in part:
+                    key, value = part.split(':', 1)
+                    # Kaçış karakterlerini geri yükle
+                    params[key.strip()] = restore_wifi(value.strip())
+
+            logger.debug(f"Parse edilen parametreler: {params}")
+
+            # Zorunlu parametreleri kontrol et
+            if 'T' not in params or 'S' not in params:
+                logger.error("WIFI QR eksik parametreler (T veya S yok)")
+                return None, "WiFi QR kodu eksik parametreler içeriyor"
+
+            security = params['T'].upper()
+            ssid = params['S']
+            password = params.get('P', '')  # Şifre opsiyonel (açık ağlar için)
+            hidden = params.get('H', 'false').lower() == 'true'
+
+            # nopass durumunda şifre boş olmalı
+            if security.upper() == 'NOPASS':
+                password = ''
+
+            logger.debug(f"STA Mode tespit edildi: SSID={ssid}, Security={security}, Hidden={hidden}")
+
+            config = {
+                'mode': 'sta',
+                'ssid': ssid,
+                'password': password,
+                'security': security,
+                'hidden': hidden
+            }
+            logger.info(f"STA Mode yapılandırması: SSID={ssid}, Security={security}, Hidden={hidden}")
+            return config, None
+
+        except Exception as e:
+            logger.error(f"WiFi QR parse hatası: {e}")
+            logger.error(f"QR içeriği: {qr_data}")
+            return None, f"WiFi QR parse hatası: {e}"
 
     logger.error(f"Tanınmayan QR format: {qr_data}")
     return None, f"Tanınmayan QR format: {qr_data}"
