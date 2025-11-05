@@ -180,7 +180,42 @@ def wait_for_camera_release():
 
         time.sleep(0.3)  # Kısa aralıklarla kontrol et
 
+    # Timeout oldu - kamerayı zorla serbest bırakmayı dene
     logger.warning(f"⚠ Kamera serbest kalma timeout ({CAMERA_RELEASE_TIMEOUT}s, {attempts} deneme)")
+    logger.info("Kamerayı ZORLA serbest bırakma deneniyor...")
+
+    # fuser ile kamerayı kullanan işlemi bul ve sonlandır
+    try:
+        video_device = f"/dev/video{CAMERA_INDEX}"
+        result = subprocess.run(
+            ['sudo', 'fuser', '-k', video_device],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 or "killed" in result.stderr.lower():
+            logger.info(f"✓ Kamera cihazını ({video_device}) kullanan işlemler sonlandırıldı")
+            time.sleep(1)  # İşlemlerin tamamen kapanması için bekle
+
+            # Tekrar dene
+            try:
+                test_cap = cv2.VideoCapture(CAMERA_INDEX)
+                if test_cap.isOpened():
+                    ret, frame = test_cap.read()
+                    test_cap.release()
+                    if ret and frame is not None:
+                        logger.info("✓ Kamera zorla serbest bırakıldı ve kullanılabilir durumda")
+                        return True
+            except Exception as e:
+                logger.debug(f"Zorla serbest bırakma sonrası test hatası: {e}")
+        else:
+            logger.warning(f"fuser sonucu: {result.stderr}")
+    except subprocess.TimeoutExpired:
+        logger.error("fuser komutu timeout oldu")
+    except Exception as e:
+        logger.error(f"Zorla serbest bırakma hatası: {e}")
+
+    logger.error("✗ Kamera serbest bırakılamadı")
     return False
 
 # ==================== LED KONTROLÜ ====================

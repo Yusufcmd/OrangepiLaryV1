@@ -220,13 +220,22 @@ def check_qr_mode_signal():
         if os.path.exists(CAMERA_SIGNAL_FILE):
             # Sinyal dosyası varsa QR modu aktif
             if not qr_mode_active:
-                logger.info("QR modu sinyali algılandı - kamera serbest bırakılıyor")
+                logger.info("QR modu sinyali algılandı - kamera ZORLA serbest bırakılıyor")
                 qr_mode_active = True
+                # Kamerayı zorla serbest bırak
                 with camera_lock:
-                    if camera is not None and camera.isOpened():
-                        camera.release()
-                        camera = None
-                        logger.info("Kamera QR modu için serbest bırakıldı")
+                    if camera is not None:
+                        try:
+                            if camera.isOpened():
+                                camera.release()
+                            camera.release()  # İkinci kez dene
+                        except Exception as e:
+                            logger.warning(f"Kamera release hatası: {e}")
+                        finally:
+                            camera = None
+                        logger.info("✓ Kamera QR modu için ZORLA serbest bırakıldı")
+                # Kameranın tamamen serbest kalması için bekle
+                time.sleep(0.3)
             return True
         else:
             # Sinyal dosyası yoksa QR modu pasif
