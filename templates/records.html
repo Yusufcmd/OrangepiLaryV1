@@ -106,6 +106,12 @@
               {% endfor %}
             </tbody>
           </table>
+          <div class="actions" style="margin-top:16px">
+            <form method="post" action="{{ url_for('records.delete_all_sessions') }}" onsubmit="return confirm('⚠️ TÜM OTURUMLAR VE İÇİNDEKİ TÜM VİDEOLAR SİLİNECEK!\n\nAktif oturum hariç tüm kayıtlar kalıcı olarak silinecektir.\n\nBu işlem geri alınamaz. Emin misiniz?')" style="display:inline">
+              {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+              <button class="btn btn-danger" type="submit" style="background:#dc2626;font-size:14px">🗑️ Tüm Oturumları Sil</button>
+            </form>
+          </div>
         {% else %}
           <p class="muted">Henüz oturum yok.</p>
         {% endif %}

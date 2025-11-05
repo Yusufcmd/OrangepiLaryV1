@@ -120,7 +120,7 @@ def _ensure_session_dir():
 
 
 # Modül yüklendiğinde session'ı initialize et
-_ensure_session_dir()
+# _ensure_session_dir()  # Bu satırı kaldırıyoruz - sadece start_background'da çağrılacak
 
 
 def push_frame(frame):
@@ -823,6 +823,88 @@ def delete_session(session):
                                       "ERROR",
                                       username=username,
                                       session_name=sess,
+                                      error=str(e))
+            except Exception:
+                pass
+
+    return redirect(url_for("records.list_records"))
+
+
+@records_bp.route("/delete_all_sessions", methods=["POST"])  # tüm oturumları silme
+@_login_required
+def delete_all_sessions():
+    """Aktif oturum hariç tüm oturumları sil"""
+    username = globals().get('session', {}).get("user", "Unknown")
+
+    try:
+        sessions = _list_sessions()
+        deleted_count = 0
+        skipped_count = 0
+        total_files = 0
+
+        for sess in sessions:
+            sess_name = sess["name"]
+
+            # Aktif oturum kontrolü - aktif oturumu atlama
+            if sess_name == SESSION_NAME:
+                skipped_count += 1
+                continue
+
+            try:
+                session_path = os.path.join(RECORDS_DIR, sess_name)
+
+                if not os.path.exists(session_path):
+                    continue
+
+                # Oturum içindeki dosya sayısını al
+                try:
+                    file_count = len([f for f in os.listdir(session_path)
+                                    if os.path.isfile(os.path.join(session_path, f))])
+                    total_files += file_count
+                except Exception:
+                    file_count = 0
+
+                # Oturum klasörünü sil
+                shutil.rmtree(session_path)
+                deleted_count += 1
+
+                LOG.info(f"Oturum silindi: {sess_name} ({file_count} dosya)")
+
+            except Exception as e:
+                LOG.error(f"Oturum silme hatası ({sess_name}): {e}")
+
+        # Başarı mesajı
+        if deleted_count > 0:
+            flash(f"{deleted_count} oturum ve toplam {total_files} video dosyası silindi.", "success")
+
+            # Silme logu
+            if syslog:
+                try:
+                    syslog.log_system_event("ALL_SESSIONS_DELETE",
+                                          f"Toplu oturum silme: {deleted_count} oturum, {total_files} dosya",
+                                          "INFO",
+                                          username=username,
+                                          deleted_sessions=deleted_count,
+                                          deleted_files=total_files,
+                                          skipped_sessions=skipped_count)
+                except Exception:
+                    pass
+        else:
+            flash("Silinecek oturum bulunamadı.", "warning")
+
+        if skipped_count > 0:
+            flash(f"{skipped_count} aktif oturum korundu.", "info")
+
+    except Exception as e:
+        flash(f"Oturumlar silinirken hata: {e}", "danger")
+        LOG.error(f"Toplu oturum silme hatası: {e}")
+
+        if syslog:
+            try:
+                syslog.log_system_event("ALL_SESSIONS_DELETE_ERROR",
+                                      "Toplu oturum silme hatası",
+                                      "ERROR",
+                                      username=username,
                                       error=str(e))
             except Exception:
                 pass

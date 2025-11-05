@@ -252,32 +252,14 @@ def api_list_sessions():
         # Aktif oturum adını belirle
         active_session_name = SESSION_NAME
 
-        # Eğer SESSION_NAME None ise, en son oturumu aktif oturum olarak kabul et
-        if not active_session_name and sessions:
-            # Oturumlar zaten mtime'a göre sıralı (en yeni önce)
-            active_session_name = sessions[0]["name"]
-            LOG.info(f"SESSION_NAME None, en son oturum aktif kabul edildi: {active_session_name}")
-
-        # Aktif oturumun listede olduğundan emin ol
-        active_in_list = any(s["name"] == active_session_name for s in sessions)
-
-        if not active_in_list and active_session_name:
-            # Aktif oturumu manuel olarak ekle
-            try:
-                sess_dir = SESSION_DIR or os.path.join(RECORDS_DIR, active_session_name)
-                if os.path.exists(sess_dir):
-                    sessions.insert(0, {
-                        "name": active_session_name,
-                        "count": 0,
-                        "size": 0,
-                        "mtime": os.stat(sess_dir).st_mtime
-                    })
-            except Exception as e:
-                LOG.warning(f"Aktif oturum eklenemedi: {e}")
+        # SESSION_NAME None ise veya listede yoksa, aktif oturum yok demektir
+        if not active_session_name:
+            active_session_name = None
+            LOG.info("SESSION_NAME None - henüz aktif oturum oluşturulmamış")
 
         result = []
         for s in sessions:
-            is_active = (s["name"] == active_session_name)
+            is_active = (active_session_name and s["name"] == active_session_name)
             result.append({
                 "name": s["name"],
                 "file_count": s["count"],
