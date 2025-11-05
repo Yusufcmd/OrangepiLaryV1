@@ -204,6 +204,21 @@ set -euo pipefail
 LOG=/var/log/wifi_mode.log
 SSID={SSID}
 PSK={PSK}
+# Yardımcı: NM hazır mı bekle
+nm_wait() {
+  if command -v nm-online >/dev/null 2>&1; then
+    echo "waiting for NetworkManager..." | tee -a "$LOG"
+    nm-online -q --timeout=20 2>&1 | tee -a "$LOG" || true
+  else
+    # nm-online yoksa kısa bir bekleme
+    sleep 3
+  fi
+}
+
+# Temizlik: olası kalıntı wpa_supplicant süreçlerini durdur
+if command -v killall >/dev/null 2>&1; then
+  killall wpa_supplicant 2>/dev/null || true
+fi
 
 echo "========================================" | tee -a "$LOG"
 echo "[sta_mode START] $(date '+%F %T')" | tee -a "$LOG"
@@ -216,28 +231,36 @@ systemctl disable --now hostapd 2>&1 | tee -a "$LOG" || true
 systemctl disable --now dnsmasq 2>&1 | tee -a "$LOG" || true
 systemctl disable --now wlan0-static.service 2>&1 | tee -a "$LOG" || true
 
+# Arayüzü temizle
 echo "[2/8] Flushing wlan0 IP addresses..." | tee -a "$LOG"
 ip addr flush dev wlan0 2>&1 | tee -a "$LOG" || true
+ip link set wlan0 down 2>&1 | tee -a "$LOG" || true
+sleep 1
+ip link set wlan0 up 2>&1 | tee -a "$LOG" || true
 sleep 2
 
-# NetworkManager'ı wlan0'ı yönetmesi için yapılandır
-echo "[3/8] Configuring NetworkManager..." | tee -a "$LOG"
+# NetworkManager'ı etkinleştir ve yeniden başlat
+echo "[3/8] Configuring and restarting NetworkManager..." | tee -a "$LOG"
 mkdir -p /etc/NetworkManager/conf.d
 if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
   sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf 2>&1 | tee -a "$LOG" || true
   [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
 fi
-
-echo "[4/8] Starting NetworkManager..." | tee -a "$LOG"
 systemctl enable --now NetworkManager 2>&1 | tee -a "$LOG" || true
-sleep 3
+sleep 2
+systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+nm_wait
+nmcli general status 2>&1 | tee -a "$LOG" || true
 
-echo "[5/8] Unblocking WiFi..." | tee -a "$LOG"
+# WiFi'ı aç ve arayüzü NM'e emanet et
+echo "[4/8] Enabling WiFi and handing wlan0 to NM..." | tee -a "$LOG"
 rfkill unblock wifi 2>&1 | tee -a "$LOG" || true
 nmcli radio wifi on 2>&1 | tee -a "$LOG" || true
+nmcli dev set wlan0 managed yes 2>&1 | tee -a "$LOG" || true
 sleep 2
 
-echo "[6/8] Checking existing connection..." | tee -a "$LOG"
+# Bağlantı profilini hazırla
+echo "[5/8] Ensuring connection profile..." | tee -a "$LOG"
 if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
   echo "Connection exists, updating..." | tee -a "$LOG"
   nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG" || true
@@ -247,11 +270,19 @@ else
   nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG"
 fi
 
+# Değişikliklerden sonra NM'i tazele
+echo "[6/8] Reloading NM connections and restarting NM..." | tee -a "$LOG"
+nmcli con reload 2>&1 | tee -a "$LOG" || true
+nmcli general reload 2>&1 | tee -a "$LOG" || true
+systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+nm_wait
+
+# Ağları tarayıp bağlanmayı dene
 echo "[7/8] Rescanning WiFi networks..." | tee -a "$LOG"
 nmcli dev wifi rescan 2>&1 | tee -a "$LOG" || true
 sleep 3
 
-echo "[7/8] Listing available networks..." | tee -a "$LOG"
+echo "[7b] Listing available networks..." | tee -a "$LOG"
 nmcli dev wifi list 2>&1 | tee -a "$LOG" || true
 
 # Bağlantı deneme fonksiyonu
@@ -274,8 +305,8 @@ connect_wifi() {
   return 1
 }
 
-# İlk 3 deneme
-echo "[8/8] Starting connection attempts (Round 1)..." | tee -a "$LOG"
+# Bağlantı denemeleri
+echo "[8/8] Starting connection attempts..." | tee -a "$LOG"
 CONNECTED=false
 for i in 1 2 3; do
   if connect_wifi $i; then
@@ -288,16 +319,12 @@ for i in 1 2 3; do
   fi
 done
 
-# Başarısız olduysa NetworkManager restart ve tekrar 3 deneme
+# Başarısızsa bir kez daha NM restart + üç deneme
+echo "Checking if connection established..." | tee -a "$LOG"
 if [ "$CONNECTED" = false ]; then
-  echo "========================================" | tee -a "$LOG"
-  echo "First round failed. Restarting NetworkManager..." | tee -a "$LOG"
-  echo "========================================" | tee -a "$LOG"
-  
+  echo "First round failed. Restarting NetworkManager and retrying..." | tee -a "$LOG"
   systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
-  sleep 5
-  
-  echo "NetworkManager restarted. Starting connection attempts (Round 2)..." | tee -a "$LOG"
+  nm_wait
   for i in 4 5 6; do
     if connect_wifi $i; then
       CONNECTED=true
