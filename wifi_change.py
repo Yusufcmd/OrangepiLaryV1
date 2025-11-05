@@ -248,27 +248,75 @@ sleep 3
 echo "[7/8] Listing available networks..." | tee -a "$LOG"
 nmcli dev wifi list 2>&1 | tee -a "$LOG" || true
 
-echo "[8/8] Attempting to connect to $SSID..." | tee -a "$LOG"
-if nmcli con up "$SSID" 2>&1 | tee -a "$LOG"; then
-  echo "✓ Connection successful!" | tee -a "$LOG"
-else
-  echo "First attempt failed, trying alternative method..." | tee -a "$LOG"
-  if nmcli dev wifi connect "$SSID" password "$PSK" 2>&1 | tee -a "$LOG"; then
-    echo "✓ Connection successful (alternative method)!" | tee -a "$LOG"
-  else
-    echo "✗ Connection failed!" | tee -a "$LOG"
-    echo "Checking connection status..." | tee -a "$LOG"
-    nmcli con show "$SSID" 2>&1 | tee -a "$LOG" || true
-    nmcli dev status 2>&1 | tee -a "$LOG" || true
+# Bağlantı deneme fonksiyonu
+connect_wifi() {{
+  local attempt=$1
+  echo "[$attempt. deneme] Attempting to connect to $SSID..." | tee -a "$LOG"
+  
+  if nmcli con up "$SSID" 2>&1 | tee -a "$LOG"; then
+    echo "✓ Connection successful on attempt $attempt!" | tee -a "$LOG"
+    return 0
   fi
+  
+  echo "[$attempt. deneme] First method failed, trying alternative method..." | tee -a "$LOG"
+  if nmcli dev wifi connect "$SSID" password "$PSK" 2>&1 | tee -a "$LOG"; then
+    echo "✓ Connection successful (alternative method) on attempt $attempt!" | tee -a "$LOG"
+    return 0
+  fi
+  
+  echo "✗ Attempt $attempt failed!" | tee -a "$LOG"
+  return 1
+}}
+
+# İlk 3 deneme
+echo "[8/8] Starting connection attempts (Round 1)..." | tee -a "$LOG"
+CONNECTED=false
+for i in 1 2 3; do
+  if connect_wifi $i; then
+    CONNECTED=true
+    break
+  fi
+  if [ $i -lt 3 ]; then
+    echo "Waiting 5 seconds before next attempt..." | tee -a "$LOG"
+    sleep 5
+  fi
+done
+
+# Başarısız olduysa NetworkManager restart ve tekrar 3 deneme
+if [ "$CONNECTED" = false ]; then
+  echo "========================================" | tee -a "$LOG"
+  echo "First round failed. Restarting NetworkManager..." | tee -a "$LOG"
+  echo "========================================" | tee -a "$LOG"
+  
+  systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
+  sleep 5
+  
+  echo "NetworkManager restarted. Starting connection attempts (Round 2)..." | tee -a "$LOG"
+  for i in 4 5 6; do
+    if connect_wifi $i; then
+      CONNECTED=true
+      break
+    fi
+    if [ $i -lt 6 ]; then
+      echo "Waiting 5 seconds before next attempt..." | tee -a "$LOG"
+      sleep 5
+    fi
+  done
 fi
 
-echo "[9/9] Restarting NetworkManager..." | tee -a "$LOG"
-systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
-sleep 3
-
+# Sonuç kontrolü
 echo "========================================" | tee -a "$LOG"
-echo "[sta_mode END] $(date '+%F %T')" | tee -a "$LOG"
+if [ "$CONNECTED" = true ]; then
+  echo "[sta_mode SUCCESS] $(date '+%F %T')" | tee -a "$LOG"
+  echo "Successfully connected to $SSID" | tee -a "$LOG"
+else
+  echo "[sta_mode FAILED] $(date '+%F %T')" | tee -a "$LOG"
+  echo "Failed to connect to $SSID after all attempts" | tee -a "$LOG"
+  echo "Checking connection status..." | tee -a "$LOG"
+  nmcli con show "$SSID" 2>&1 | tee -a "$LOG" || true
+  nmcli dev status 2>&1 | tee -a "$LOG" || true
+fi
+
 echo "Final connection status:" | tee -a "$LOG"
 nmcli con show --active 2>&1 | tee -a "$LOG" || true
 ip addr show wlan0 2>&1 | tee -a "$LOG" || true
