@@ -45,6 +45,26 @@ mobile_api_bp = Blueprint("mobile_api", __name__, url_prefix="/api/v1")
 
 # ==================== Yardımcı Fonksiyonlar ====================
 
+def _get_active_session_name(existing_sessions: Optional[list] = None) -> Optional[str]:
+    """Runtime'da aktif oturumu belirle. Öncelik: recordsVideo.SESSION_NAME,
+    yoksa var olan oturumlar içinden en son değişen (mtime en büyük) oturum adı.
+    """
+    try:
+        current = getattr(recordsVideo, "SESSION_NAME", None)
+        if current:
+            return current
+    except Exception:
+        pass
+    try:
+        sessions = existing_sessions if existing_sessions is not None else _list_sessions()
+        if sessions:
+            latest = max(sessions, key=lambda s: s.get("mtime", 0))
+            return latest.get("name")
+    except Exception as e:
+        LOG.debug(f"Aktif oturum fallback belirlenemedi: {e}")
+    return None
+
+
 def verify_token(token: str) -> bool:
     """Token'ı sabit token ile karşılaştır"""
     return token == API_TOKEN
@@ -250,17 +270,12 @@ def api_list_sessions():
 
         sessions = _list_sessions()
 
-        # Aktif oturum adını belirle
-        active_session_name = SESSION_NAME
-
-        # SESSION_NAME None ise veya listede yoksa, aktif oturum yok demektir
-        if not active_session_name:
-            active_session_name = None
-            LOG.info("SESSION_NAME None - henüz aktif oturum oluşturulmamış")
+        # Aktif oturumu belirle (runtime + fallback)
+        active_session_name = _get_active_session_name(sessions)
 
         result = []
         for s in sessions:
-            is_active = (active_session_name and s["name"] == active_session_name)
+            is_active = (active_session_name == s["name"]) if active_session_name else False
             result.append({
                 "name": s["name"],
                 "file_count": s["count"],
@@ -328,12 +343,13 @@ def api_session_detail(session_name):
                 "download_url": f"/api/v1/files/{safe_session}/{f['name']}"
             })
 
-        is_active = (safe_session == SESSION_NAME)
+        active_session_name = _get_active_session_name()
+        is_active = (safe_session == active_session_name)
 
         return jsonify({
             "success": True,
             "session": safe_session,
-            "is_active": is_active,
+            "is_active": bool(is_active),
             "files": result
         }), 200
 
@@ -363,13 +379,14 @@ def api_delete_session(session_name):
         except Exception:
             return jsonify({"success": False, "error": "Geçersiz oturum"}), 400
 
-        # Aktif oturum kontrolü
-        is_active = (safe_session == SESSION_NAME) and (_recording_flag.is_set() or (_writer is not None))
+        active_session_name = _get_active_session_name()
+        writer_obj = getattr(recordsVideo, "_writer", None)
+        is_active = (safe_session == active_session_name) and (_recording_flag.is_set() or (writer_obj is not None))
         if is_active:
             return jsonify({"success": False, "error": "Aktif oturum silinemez"}), 400
 
         import shutil
-        target = os.path.join(RECORDS_DIR, safe_session)
+        target = os.path.join(getattr(recordsVideo, "RECORDS_DIR", RECORDS_DIR), safe_session)
         shutil.rmtree(target)
 
         return jsonify({
@@ -540,15 +557,24 @@ def api_recording_status():
         is_recording = _recording_flag.is_set()
 
         resolution = None
-        if FRAME_SIZE:
-            resolution = list(FRAME_SIZE)  # (width, height)
+        try:
+            fs = getattr(recordsVideo, "FRAME_SIZE", None)
+            if fs:
+                resolution = list(fs)
+        except Exception:
+            pass
+
+        current_file = getattr(recordsVideo, "_current_file", None)
+        session_name = _get_active_session_name()
+        writer_fps = getattr(recordsVideo, "_writer_fps", None)
+        base_fps = getattr(recordsVideo, "RECORD_FPS", RECORD_FPS)
 
         return jsonify({
             "success": True,
             "recording": is_recording,
-            "current_file": _current_file,
-            "current_session": SESSION_NAME,
-            "fps": _writer_fps if is_recording else RECORD_FPS,
+            "current_file": current_file,
+            "current_session": session_name,
+            "fps": writer_fps if is_recording and writer_fps is not None else base_fps,
             "resolution": resolution
         }), 200
 
@@ -668,20 +694,19 @@ def api_system_info():
         total_files = sum(s["count"] for s in sessions)
         total_size = sum(s["size"] for s in sessions)
 
-        # Kamera durumunu kontrol et
         camera_status = check_camera_status()
 
-        # Cihaz ismini al
         device_name = "OrangePi-Lary"
         try:
             device_name = socket.gethostname()
         except Exception:
             pass
 
-        # SD kart/disk kullanım bilgisi (records dizininin bulunduğu dosya sistemi)
+        # Depolama bilgisi - modülden aktif dizini al
+        records_dir_runtime = getattr(recordsVideo, "RECORDS_DIR", RECORDS_DIR)
         storage_info = {}
         try:
-            usage = shutil.disk_usage(RECORDS_DIR)
+            usage = shutil.disk_usage(records_dir_runtime)
             used = usage.total - usage.free
             def _pct(part, whole):
                 try:
@@ -689,7 +714,7 @@ def api_system_info():
                 except Exception:
                     return None
             storage_info = {
-                "path": RECORDS_DIR,
+                "path": records_dir_runtime,
                 "total": int(usage.total),
                 "used": int(used),
                 "free": int(usage.free),
@@ -702,6 +727,8 @@ def api_system_info():
         except Exception as e:
             LOG.warning(f"Disk kullanımı okunamadı: {e}")
 
+        active_session_name = _get_active_session_name(sessions)
+
         return jsonify({
             "success": True,
             "system": {
@@ -709,8 +736,8 @@ def api_system_info():
                 "total_files": total_files,
                 "total_size": total_size,
                 "total_size_formatted": format_size(total_size),
-                "records_directory": RECORDS_DIR,
-                "active_session": SESSION_NAME,
+                "records_directory": records_dir_runtime,
+                "active_session": active_session_name,
                 "camera_status": camera_status,
                 "device_name": device_name,
                 "storage": storage_info
