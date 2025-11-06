@@ -1107,3 +1107,13 @@ def main():
             logger.error(f"GPIO cleanup hatası: {e}")
 
         cleanup_led_gpio()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Program kullanıcı tarafından sonlandırıldı")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"FATAL: Program hatası: {e}", exc_info=True)
+        sys.exit(1)
