@@ -90,7 +90,7 @@ except (PermissionError, OSError) as e:
 
 # ==================== YAPILANDIRMA ====================
 GPIO_CHIP = "/dev/gpiochip1"
-GPIO_OFFSET = 76  # PWM sinyali gelecek pin
+GPIO_OFFSET = 259  # PWM sinyali gelecek pin (ESP8266 D6 → Orange Pi PI3 offset 259)
 ACTIVE_HIGH = True
 
 # PWM ölçüm parametreleri
@@ -1042,7 +1042,8 @@ def main():
                             if os.path.exists(AP7_MODE_SCRIPT):
                                 logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → AP7 MODE tetikleniyor")
                                 try:
-                                    res = subprocess.run(["sudo", AP7_MODE_SCRIPT], capture_output=True, text=True, timeout=45)
+                                    # /opt noexec olsa bile çalışsın: bash ile çağır
+                                    res = subprocess.run(["sudo", "bash", AP7_MODE_SCRIPT], capture_output=True, text=True, timeout=45)
                                     last_ap7_trigger_time = time.time()
                                     last_trigger_time = last_ap7_trigger_time  # genel cooldown'u da başlat
                                     if res.returncode == 0:
@@ -1105,4 +1106,3 @@ def main():
             logger.error(f"GPIO cleanup hatası: {e}")
 
         cleanup_led_gpio()
-
