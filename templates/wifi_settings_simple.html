@@ -135,7 +135,7 @@
     <div id="staSettings" class="{% if mode=='ap' %}hidden{% endif %}">
       <div class="card">
         <h2>Wi-Fi Ağına Bağlan</h2>
-        <form method="post" action="{{ url_for('connect_sta_network') }}">
+        <form method="post" action="{{ url_for('connect_sta_network') }}" id="staForm">
           <div class="row">
             <label for="sta_ssid" class="muted" style="min-width:80px;text-align:right">SSID</label>
             <input type="text" id="sta_ssid" name="ssid" placeholder="Ağ adı" required style="min-width:250px">
@@ -143,7 +143,12 @@
 
           <div class="row">
             <label for="sta_password" class="muted" style="min-width:80px;text-align:right">Şifre</label>
-            <input type="password" id="sta_password" name="password" placeholder="En az 8 karakter" required minlength="8">
+            <input type="text" id="sta_password" name="password" placeholder="En az 8 karakter" required minlength="8">
+          </div>
+
+          <div class="row">
+            <label for="sta_password_confirm" class="muted" style="min-width:80px;text-align:right">Şifre Tekrar</label>
+            <input type="text" id="sta_password_confirm" placeholder="Şifreyi tekrar girin" required minlength="8">
           </div>
 
           <div class="row" style="margin-top:8px">
@@ -155,7 +160,7 @@
           {% endif %}
         </form>
         <p class="muted" style="margin-top:12px">
-          Kaydet’e bastığınızda AP modu kapanıp cihaz seçtiğiniz ağa bağlanmaya çalışacaktır. Bu esnada erişiminiz kesilebilir.
+          Kaydet'e bastığınızda AP modu kapanıp cihaz seçtiğiniz ağa bağlanmaya çalışacaktır. Bu esnada erişiminiz kesilebilir.
         </p>
       </div>
     </div>
@@ -211,6 +216,16 @@
         btnSta.classList.add('active'); btnAp.classList.remove('active');
       }
     }
+
+    // Şifre tekrarını kontrol et
+    document.getElementById('staForm').addEventListener('submit', function(e) {
+      const password = document.getElementById('sta_password').value;
+      const passwordConfirm = document.getElementById('sta_password_confirm').value;
+      if (password !== passwordConfirm) {
+        e.preventDefault();
+        alert('Şifreler uyuşmuyor!');
+      }
+    });
   </script>
 </body>
 </html>
