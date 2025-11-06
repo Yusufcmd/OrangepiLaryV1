@@ -113,6 +113,7 @@ QR_READ_TIMEOUT = 30  # 30 saniye QR okuma timeout
 # WiFi script yolları
 AP_MODE_SCRIPT = "/opt/lscope/bin/ap_mode.sh"
 STA_MODE_SCRIPT = "/opt/lscope/bin/sta_mode.sh"
+AP7_MODE_SCRIPT = "/opt/lscope/bin/ap7_mode.sh"  # %50 duty için tetiklenecek script
 
 # LED kontrolü (PI2 pini)
 GPIO_LED_CHIP = "/dev/gpiochip1"
@@ -1012,7 +1013,12 @@ def main():
     logger.info("İzleme başladı. Çıkmak için Ctrl+C...")
 
     last_trigger_time = 0
-    TRIGGER_COOLDOWN = 30  # 60 saniye soğuma süresi
+    TRIGGER_COOLDOWN = 30  # 30 saniye soğuma süresi (genel)
+
+    # %50 duty için ayrı cooldown
+    last_ap7_trigger_time = 0
+    AP7_COOLDOWN = 60  # saniye
+    AP7_TOLERANCE = 3  # %50 için ±3% tolerans
 
     try:
         while not stop_flag:
@@ -1023,15 +1029,41 @@ def main():
                 if duty is not None:
                     current_time = time.time()
 
-                    # Soğuma süresi kontrolü
+                    # Soğuma süresi kontrolü (genel)
                     if (current_time - last_trigger_time) < TRIGGER_COOLDOWN:
                         remaining = TRIGGER_COOLDOWN - (current_time - last_trigger_time)
                         logger.info(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}% - Soğuma: {remaining:.0f}s")
                         time.sleep(1)
                         continue
 
+                    # %50 duty → ap7_mode.sh (dar toleransla)
+                    if abs(duty - 50.0) <= AP7_TOLERANCE:
+                        if (current_time - last_ap7_trigger_time) >= AP7_COOLDOWN:
+                            if os.path.exists(AP7_MODE_SCRIPT):
+                                logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → AP7 MODE tetikleniyor")
+                                try:
+                                    res = subprocess.run(["sudo", AP7_MODE_SCRIPT], capture_output=True, text=True, timeout=45)
+                                    last_ap7_trigger_time = time.time()
+                                    last_trigger_time = last_ap7_trigger_time  # genel cooldown'u da başlat
+                                    if res.returncode == 0:
+                                        logger.info("✓ ap7_mode.sh başarıyla çalıştı")
+                                        if res.stdout:
+                                            logger.debug(f"ap7 stdout:\n{res.stdout}")
+                                    else:
+                                        logger.error(f"✗ ap7_mode.sh hata: {res.stderr or res.stdout}")
+                                except subprocess.TimeoutExpired:
+                                    logger.error("ap7_mode.sh zaman aşımı")
+                                except Exception as e:
+                                    logger.error(f"ap7_mode.sh çağrı hatası: {e}")
+                            else:
+                                logger.error(f"ap7_mode.sh bulunamadı: {AP7_MODE_SCRIPT}")
+                        else:
+                            # AP7 özel cooldown bilgisi
+                            remain = AP7_COOLDOWN - (current_time - last_ap7_trigger_time)
+                            logger.info(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}% - AP7 soğuma: {remain:.0f}s")
+
                     # Recovery modu kontrolü (%75)
-                    if is_duty_in_range(duty, DUTY_RECOVERY, PWM_TOLERANCE):
+                    elif is_duty_in_range(duty, DUTY_RECOVERY, PWM_TOLERANCE):
                         logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → RECOVERY MODU")
                         success = trigger_recovery()
                         last_trigger_time = time.time()
@@ -1074,6 +1106,3 @@ def main():
 
         cleanup_led_gpio()
 
-
-if __name__ == "__main__":
-    main()

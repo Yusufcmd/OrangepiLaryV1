@@ -42,6 +42,11 @@ const uint32_t RPI_BOOT_GUARD_MS = 30000;   // 30 saniye boot koruma süresi
 uint32_t rpiBootStartTs = 0;                // RPi başlatma zamanı
 bool     rpiBootGuardActive = false;        // Boot koruma aktif mi?
 
+// === RECOVERY KİLİT MODU ===
+bool        recoveryLockdownActive = false;
+uint32_t    recoveryLockStartTs    = 0;
+const uint32_t RECOVERY_LOCK_MS    = 180000; // 3 dakika
+
 // ==== Web Server & Session ====
 ESP8266WebServer server(80);
 bool   webStarted    = false;
@@ -126,6 +131,7 @@ uint8_t  socIndex = 0;
 volatile float g_socAvgLatest = 100.0f;
 
 // ===================== Yardımcılar =====================
+
 static inline float clampf(float v, float lo, float hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
@@ -250,6 +256,35 @@ uint32_t shutdownStartTs = 0;       // GRACE başlangıç zamanı
 inline void ledSet(bool on) {
   digitalWrite(PIN_LED, on ? HIGH : LOW); // aktif HIGH
   ledStateOn = on;
+}
+
+void enterRecoveryLockdown() {
+  if (recoveryLockdownActive) return;
+  recoveryLockdownActive = true;
+  recoveryLockStartTs = millis();
+  Serial.println("[RECOVERY-LOCK] 3 dakikalık kilit modu BAŞLADI.");
+
+  // Yan işlevleri anında devre dışı bırak
+  if (otaModeActive) exitOtaMode();     // OTA/Web kapat
+  // Kapanma sürecinde ise iptal et ve normale dön (ESP kapanmasın)
+  if (shuttingDown) {
+    abortShutdownGraceAndResume();      // LATCH HIGH kalır, Pi kapanmaz
+  }
+
+  // Kullanıcıya stabil durum göstergesi (isteğe göre değiştirilebilir)
+  ledMode = LED_NORMAL;
+  ledSet(true);
+}
+
+void exitRecoveryLockdown() {
+  if (!recoveryLockdownActive) return;
+  recoveryLockdownActive = false;
+  Serial.println("[RECOVERY-LOCK] Kilit modu BİTTİ. Normal moda dönüldü.");
+
+  // LED modunu mevcut duruma göre normalle
+  ledMode = recordState ? LED_RECORD : LED_NORMAL;
+  ledSet(true);
+  ledTs = millis();
 }
 
 // --- YENİ: LED Zamanlamaları ---
@@ -385,6 +420,10 @@ void ledUpdate(uint32_t now) {
 
 // ===================== OTA (Wi-Fi + Web Sunucu) =====================
 void enterOtaMode() {
+  if (recoveryLockdownActive) {
+    Serial.println("[RECOVERY-LOCK] OTA talebi yoksayıldı.");
+    return;
+  }
   if (otaModeActive || shuttingDown) return; // GRACE'te OTA'ya girme
   otaModeActive = true;
   otaInitDone   = false;
@@ -600,6 +639,10 @@ void startOtaWeb() {
 // - Süre dolarsa RPi güç kesilir ve LATCH LOW ile ESP kapatılır
 
 void beginShutdownGrace(ShutdownReason reason) {
+  if (recoveryLockdownActive) {
+    Serial.println("[RECOVERY-LOCK] GRACE isteği kilitte yoksayıldı.");
+    return;
+  }
   if (shuttingDown) return;
   shuttingDown = true;
   shutdownStartTs = millis();
@@ -674,6 +717,12 @@ void requestRebootDuringShutdown() {
 
 // ===================== Çoklu Basışı Ertelenmiş Değerlendirme =====================
 void evaluatePressSequence() {
+  if (recoveryLockdownActive) {
+    // Recovery kilidi varken yeni sekanslar işlenmez
+    pressCounter = 0;
+    Serial.println("[RECOVERY-LOCK] Basış sekansı yoksayıldı.");
+    return;
+  }
   uint8_t n = pressCounter;
   pressCounter = 0;
 
@@ -689,6 +738,7 @@ void evaluatePressSequence() {
   if (n == 20) {
     // 20x → %75 duty, 15 sn recovery PWM
     startRecoveryPwm((PWM_RANGE * 3) / 4, RECOVERY_SIGNAL_DURATION_MS);
+    enterRecoveryLockdown(); // 3 dk kilit modu
   }
   else if (n == 10) {
     // 10x → OTA toggle
@@ -798,13 +848,25 @@ void setup() {
 void loop() {
   uint32_t now = millis();
 
+  // --- RECOVERY KİLİT denetimi (3 dk boyunca tüm yan işlevler engellenir) ---
+  if (recoveryLockdownActive) {
+    // Güvence: kilitte iken GRACE ve OTA kesinlikle kapalı kalsın
+    if (shuttingDown) abortShutdownGraceAndResume();
+    if (otaModeActive) exitOtaMode();
+
+    // Kilit süresi doldu mu?
+    if (now - recoveryLockStartTs >= RECOVERY_LOCK_MS) {
+      exitRecoveryLockdown();
+    }
+  }
+
   // --- Boot koruma süresini kontrol et ---
   if (rpiBootGuardActive) {
     if ((now - rpiBootStartTs) >= RPI_BOOT_GUARD_MS) {
       rpiBootGuardActive = false;
       Serial.println("[BOOT GUARD] Orange Pi boot koruması sona erdi. Sistem normal çalışıyor.");
 
-      // KARAR ANI: Boot bitti. Sıraya alınmış bir kapatma görevi var mı?
+      // Boot sırasında istenen kapatma var mıydı?
       if (shutdownRequestedDuringBoot) {
         Serial.println("[BOOT GUARD] Boot sırasında istenen kapatma işlemi şimdi başlatılıyor.");
         shutdownRequestedDuringBoot = false; // Bayrağı temizle.
@@ -813,8 +875,8 @@ void loop() {
     }
   }
 
-  // --- OTA modu: sadece GRACE değilken çalıştır ---
-  if (!shuttingDown && otaModeActive) {
+  // --- OTA modu: sadece GRACE değil ve kilit yokken çalıştır ---
+  if (!shuttingDown && !recoveryLockdownActive && otaModeActive) {
     if (WiFi.status() == WL_CONNECTED) {
       if (!webStarted) {
         startOtaWeb();
@@ -832,8 +894,8 @@ void loop() {
       server.handleClient();
     } else {
       // Bağlanma sürecinde bilgilendirme (30 sn kadar)
+      static uint32_t lastLog = 0;
       if (now - otaStartTs < OTA_CONNECT_INFO_MS) {
-        static uint32_t lastLog = 0;
         if (now - lastLog >= 1000) {
           lastLog = now;
           Serial.printf("[OTA] Wi-Fi durumu: %d (0=Idle,3=Bağlı)\n", WiFi.status());
@@ -873,8 +935,6 @@ void loop() {
   }
 
   // DÜZELTME: LED güncelleme fonksiyonu HER ZAMAN çalışmalı.
-  // Kendi içindeki mantık, `shuttingDown` durumunda ne yapacağını zaten biliyor.
-  // Bu, düşük batarya kapatması sırasında LED'in yanıp sönmesini sağlar.
   ledUpdate(now);
 
   // --- Buton okuma / debounce ---
@@ -889,24 +949,27 @@ void loop() {
       btnState = raw;
 
       if (btnState) {
-        // Basış kenarı: SADECE SAY (eylem yok)
+        // Basış kenarı: SADECE SAY (kilitte sayma yapma)
         pressStart = now;
         lastPressEdgeTs = now;
         Serial.println("Butona basıldı.");
 
-        // YENİ MANTIK: Boot sırasında gelen kapatma isteğini iptal etme
         if (rpiBootGuardActive && shutdownRequestedDuringBoot) {
           Serial.println("[BOOT GUARD] Sıraya alınmış kapatma isteği iptal edildi.");
           shutdownRequestedDuringBoot = false;
-          ledSet(true); // Kullanıcıya geri bildirim: LED'i tekrar yak.
+          ledSet(true);
           pressCounter = 0;
         }
         else if (shuttingDown) {
           requestRebootDuringShutdown();
           pressCounter = 0;
         } else {
-          pressCounter++;
-          Serial.printf("pressCounter = %u\n", pressCounter);
+          if (!recoveryLockdownActive) {
+            pressCounter++;
+            Serial.printf("pressCounter = %u\n", pressCounter);
+          } else {
+            Serial.println("[RECOVERY-LOCK] Basış görmezden gelindi.");
+          }
         }
       } else {
         Serial.println("Buton bırakıldı.");
@@ -914,33 +977,30 @@ void loop() {
     }
   }
 
-  // Uzun basış (güvenli kapatma GRACE başlat)
-  // DİKKAT: Bu kontrol SADECE pressCounter 1 iken çalışır. Bu, çoklu basış sekansları sırasında
-  // yanlışlıkla uzun basışın tetiklenmesini engeller.
-  if (!shuttingDown && btnState && (pressCounter <= 1) && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
-    // YENİ MANTIK: Boot sırasında gelen kapatma isteğini sıraya al
+  // Uzun basış (güvenli kapatma GRACE başlat) — kilitte devre dışı
+  if (!shuttingDown && !recoveryLockdownActive && btnState &&
+      (pressCounter <= 1) && (now - pressStart >= LONGPRESS_MS) && !recoveryTriggered) {
     if (rpiBootGuardActive) {
       if (!shutdownRequestedDuringBoot) {
         Serial.println("[BOOT GUARD] Kapatma isteği sıraya alındı. Boot bitince kapatılacak.");
         shutdownRequestedDuringBoot = true;
-        ledSet(false); // Kullanıcıya geri bildirim: LED'i söndür.
+        ledSet(false);
       }
     } else {
       Serial.println("Uzun basış algılandı -> Kapatma GRACE başlatılıyor.");
       beginShutdownGrace(USER_REQUEST);
     }
-    pressCounter = 0; // Her durumda sayacı sıfırla.
+    pressCounter = 0;
   }
 
-
-  // 1 sn içinde yeni basış yoksa: SEKANSI DEĞERLENDİR
+  // 1 sn içinde yeni basış yoksa: SEKANSI DEĞERLENDİR — kilitte işlem yapma
   if (!shuttingDown && pressCounter > 0 &&
       (now - lastPressEdgeTs >= MULTI_PRESS_WINDOW_MS) &&
       !recoveryTriggered) {
-    evaluatePressSequence();  // --> tek karar noktası
+    evaluatePressSequence();
   }
 
-  // Recovery modu aktifse PWM'i süre bitince kapat
+  // Recovery modu aktifse PWM'i süre bitince kapat (kilitten bağımsız)
   if (recoveryTriggered) {
     uint32_t elapsed = millis() - recoveryTriggerTs;
     if (elapsed >= recoveryDurationMs) {
@@ -951,17 +1011,17 @@ void loop() {
     }
   }
 
+  // GRACE akışı (kilitte GRACE başlatılamaz, fakat eğer önceden başladıysa burada tamamlanır)
   if (shuttingDown) {
     uint32_t elapsed = millis() - shutdownStartTs;
 
-    // AŞAMA 1: Pi'nin kapanmasını bekle (10 saniye)
-    // shutdown_cooldown değişkenini 10 olarak ayarladığınızdan emin olun.
+    // AŞAMA 1: Pi'nin kapanmasını bekle (shutdown_cooldown sn)
     if (elapsed >= (uint32_t)shutdown_cooldown * 1000UL) {
 
       // AŞAMA 2: Pi'nin gücünü kes ve 2 saniye bekle
       digitalWrite(RPI_PIN, HIGH);
       Serial.println("Raspberry Pi gücü kesildi (RPI_PIN HIGH).");
-      delay(2000); // 2 saniyelik bekleme. Bu kısa ve kritik olduğu için delay kabul edilebilir.
+      delay(2000); // kritik bekleme
 
       // AŞAMA 3: Karar anı - yeniden başlat mı, tamamen kapat mı?
       if (rebootRequested) {
@@ -975,7 +1035,7 @@ void loop() {
         rpiBootGuardActive = true; // Yeniden boot korumasını başlat.
         rpiBootStartTs = millis();
         primeAndReadInitialSOC(); // SOC okumayı yeniden başlat.
-        ledSet(true); // LED zaten yanık ama emin olalım.
+        ledSet(true);
         ledMode = LED_NORMAL;
 
         Serial.println("Sistem yeniden başlatıldı.");
@@ -983,7 +1043,7 @@ void loop() {
       } else {
         Serial.println("Tamamen kapatılıyor. LATCH LOW.");
         digitalWrite(PIN_LATCH, LOW);
-        // Buradan sonrası çalışmaz, güç kesilir.
+        // Güç kesilir.
       }
     }
   }
