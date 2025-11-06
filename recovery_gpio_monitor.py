@@ -90,7 +90,7 @@ except (PermissionError, OSError) as e:
 
 # ==================== YAPILANDIRMA ====================
 GPIO_CHIP = "/dev/gpiochip1"
-GPIO_OFFSET = 259  # PWM sinyali gelecek pin (ESP8266 D6 → Orange Pi PI3 offset 259)
+GPIO_OFFSET = 76  # PWM sinyali gelecek pin (ESP8266 D6 → Orange Pi PI3 offset 76)
 ACTIVE_HIGH = True
 
 # PWM ölçüm parametreleri
@@ -967,8 +967,76 @@ def open_chip(path):
 def request_input(chip, offset):
     """GPIO pinini input olarak ayarla"""
     line = chip.get_line(int(offset))
-    line.request(consumer="pwm-monitor", type=gpiod.LINE_REQ_DIR_IN)
-    return line
+
+    # Eğer pin meşgulse, önce serbest bırakmayı dene
+    try:
+        line.request(consumer="pwm-monitor", type=gpiod.LINE_REQ_DIR_IN)
+        return line
+    except OSError as e:
+        if e.errno == 16:  # Device or resource busy
+            logger.warning(f"GPIO {offset} meşgul, serbest bırakılmaya çalışılıyor...")
+            try:
+                # Pin zaten başka bir consumer tarafından kullanılıyor
+                # Önce o consumer'ı bulmaya çalış
+                try:
+                    line.release()
+                except:
+                    pass
+
+                # Biraz bekle
+                time.sleep(0.5)
+
+                # Tekrar dene
+                line = chip.get_line(int(offset))
+                line.request(consumer="pwm-monitor", type=gpiod.LINE_REQ_DIR_IN)
+                logger.info(f"✓ GPIO {offset} serbest bırakıldı ve yeniden ayarlandı")
+                return line
+            except OSError:
+                # Hala meşgul - başka bir yöntem dene
+                logger.warning("GPIO hala meşgul, alternatif yöntem deneniyor...")
+
+                # Sistem genelinde GPIO kullanan işlemleri bul
+                try:
+                    result = subprocess.run(
+                        ['lsof', f'/dev/gpiochip*'],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                        shell=False
+                    )
+                    if result.stdout:
+                        logger.info(f"GPIO kullanan işlemler:\n{result.stdout}")
+                except:
+                    pass
+
+                # gpioinfo ile pin durumunu kontrol et
+                try:
+                    result = subprocess.run(
+                        ['gpioinfo', 'gpiochip1'],
+                        capture_output=True,
+                        text=True,
+                        timeout=3
+                    )
+                    if result.stdout:
+                        # Sadece bizim pinimizi göster
+                        lines = result.stdout.split('\n')
+                        for i, line_text in enumerate(lines):
+                            if f'line {offset}:' in line_text or f'line  {offset}:' in line_text:
+                                logger.info(f"GPIO {offset} durumu: {line_text}")
+                                # Bir sonraki satırı da göster (detaylar)
+                                if i + 1 < len(lines):
+                                    logger.info(f"  {lines[i + 1]}")
+                                break
+                except FileNotFoundError:
+                    logger.warning("gpioinfo komutu bulunamadı (gpiod paketi yükleyin)")
+                except Exception as e:
+                    logger.debug(f"gpioinfo hatası: {e}")
+
+                raise OSError(f"GPIO {offset} meşgul ve serbest bırakılamıyor. "
+                            f"Lütfen GPIO kullanan diğer işlemleri durdurun veya "
+                            f"sistemi yeniden başlatın.") from e
+        else:
+            raise
 
 def main():
     """Ana döngü"""
