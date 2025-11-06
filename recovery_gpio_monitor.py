@@ -101,6 +101,7 @@ PWM_TOLERANCE = 10  # %10 tolerans (örn: 75±10 = 65-85%)
 # Duty cycle hedefleri
 DUTY_RECOVERY = 75  # %75 ± tolerans → Recovery modu
 DUTY_QR_MODE = 25   # %25 ± tolerans → QR okuma modu
+DUTY_AP7_MODE = 50  # %50 ± tolerans → AP7 modu
 
 # Recovery için factoryctl
 FACTORYCTL_BIN = "/usr/local/sbin/factoryctl"
@@ -183,7 +184,7 @@ def wait_for_camera_release():
                     logger.debug(f"Kamera açıldı ama frame okunamadı (deneme {attempts}/{max_attempts})")
             else:
                 test_cap.release()
-                cv2.destroyAllWindows()
+                cv2.destroy_allWindows()
                 logger.debug(f"Kamera açılamadı (deneme {attempts}/{max_attempts})")
         except Exception as e:
             logger.debug(f"Kamera test hatası: {e} (deneme {attempts}/{max_attempts})")
@@ -314,7 +315,7 @@ def wait_for_camera_release():
                     return True
             else:
                 test_cap.release()
-                cv2.destroyAllWindows()
+                cv2.destroy_allWindows()
         except Exception as e:
             logger.debug(f"Son kontrol hatası (deneme {final_attempt + 1}): {e}")
         time.sleep(1)
@@ -1085,7 +1086,7 @@ def main():
 
                     else:
                         # Normal durum
-                        logger.debug(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}% - Bekleniyor...")
+                        logger.info(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}%")
                 else:
                     logger.warning(f"[{time.strftime('%H:%M:%S')}] PWM okunamadı")
 
