@@ -10,13 +10,22 @@ echo "======================================"
 
 # Web uygulamasının hangi kullanıcı ile çalıştığını bul
 WEB_USER=""
-if systemctl is-active --quiet clary.service 2>/dev/null; then
-    WEB_USER=$(systemctl show -p User --value clary.service 2>/dev/null || echo "")
+if systemctl is-active --quiet clary-main.service 2>/dev/null; then
+    WEB_USER=$(systemctl show -p User --value clary-main.service 2>/dev/null || echo "")
 fi
 
-# Alternatif: nginx/apache kullanıcıları
+# Alternatif servis adları
 if [ -z "$WEB_USER" ] || [ "$WEB_USER" = "root" ]; then
-    if id -u www-data >/dev/null 2>&1; then
+    if systemctl is-active --quiet clary.service 2>/dev/null; then
+        WEB_USER=$(systemctl show -p User --value clary.service 2>/dev/null || echo "")
+    fi
+fi
+
+# Alternatif: nginx/apache/rise kullanıcıları
+if [ -z "$WEB_USER" ] || [ "$WEB_USER" = "root" ]; then
+    if id -u rise >/dev/null 2>&1; then
+        WEB_USER="rise"
+    elif id -u www-data >/dev/null 2>&1; then
         WEB_USER="www-data"
     elif id -u nginx >/dev/null 2>&1; then
         WEB_USER="nginx"
@@ -25,7 +34,7 @@ if [ -z "$WEB_USER" ] || [ "$WEB_USER" = "root" ]; then
     else
         echo "HATA: Web servis kullanıcısı bulunamadı!"
         echo "Lütfen web servisinizin hangi kullanıcı ile çalıştığını kontrol edin."
-        echo "Örnek: systemctl show -p User --value clary.service"
+        echo "Örnek: systemctl show -p User --value clary-main.service"
         exit 1
     fi
 fi
@@ -44,6 +53,8 @@ cat > "$SUDOERS_FILE" << EOF
 # Kullanıcı: $WEB_USER
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/install
 $WEB_USER ALL=(root) NOPASSWD: /bin/install
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/tee
+$WEB_USER ALL=(root) NOPASSWD: /bin/tee
 $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * NetworkManager*
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl * NetworkManager*
 $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * hostapd*
@@ -52,9 +63,14 @@ $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * dnsmasq*
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl * dnsmasq*
 $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * wlan0-static*
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl * wlan0-static*
+$WEB_USER ALL=(root) NOPASSWD: /bin/systemctl daemon-reload
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
 $WEB_USER ALL=(root) NOPASSWD: /opt/lscope/bin/sta_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /opt/lscope/bin/ap_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /opt/lscope/bin/ap7_mode.sh
+$WEB_USER ALL=(root) NOPASSWD: /usr/local/sbin/sta_mode.sh
+$WEB_USER ALL=(root) NOPASSWD: /usr/local/sbin/ap_mode.sh
+$WEB_USER ALL=(root) NOPASSWD: /usr/local/sbin/ap7_mode.sh
 EOF
 
 # Dosya izinlerini ayarla (440 - sadece root okuyabilir)
@@ -76,6 +92,15 @@ echo "Dizinler kontrol ediliyor..."
 mkdir -p /etc/hostapd
 mkdir -p /opt/lscope/bin
 echo "✓ Gerekli dizinler hazır"
+
+# /var/log/wifi_mode.log dosyasını oluştur ve izinlendir
+echo ""
+echo "Log dosyası ayarlanıyor..."
+LOG_FILE="/var/log/wifi_mode.log"
+touch "$LOG_FILE"
+chown "$WEB_USER:$WEB_USER" "$LOG_FILE" 2>/dev/null || chown "$WEB_USER" "$LOG_FILE"
+chmod 664 "$LOG_FILE"
+echo "✓ Log dosyası oluşturuldu: $LOG_FILE"
 
 # hostapd.conf dosyasının varlığını kontrol et
 if [ ! -f /etc/hostapd/hostapd.conf ]; then
@@ -112,8 +137,10 @@ echo "Kurulum tamamlandı!"
 echo "======================================"
 echo ""
 echo "Web servisinizi yeniden başlatın:"
-echo "  sudo systemctl restart clary.service"
+echo "  sudo systemctl restart clary-main.service"
 echo ""
 echo "Veya Python uygulamanızı yeniden çalıştırın."
 echo ""
-
+echo "Test için:"
+echo "  sudo -u $WEB_USER sudo -n /opt/lscope/bin/sta_mode.sh"
+echo ""
