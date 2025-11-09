@@ -192,8 +192,8 @@ def _try_import_gpio():
     # Pin 258 için sistem hazır LED'i
     try:
         ready_led_pin = 258
-        GPIO.setup(ready_led_pin, GPIO.OUT, initial=GPIO.LOW)
-        logger.info(f"Sistem hazır LED pin {ready_led_pin} başlatıldı")
+        GPIO.setup(ready_led_pin, GPIO.OUT, initial=GPIO.HIGH)  # LED direkt yansın
+        logger.info(f"Sistem hazır LED pin {ready_led_pin} başlatıldı ve HIGH yapıldı")
     except Exception as e:
         logger.warning(f"Sistem hazır LED pin init başarısız: {e}")
         ready_led_pin = None

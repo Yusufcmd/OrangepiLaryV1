@@ -199,13 +199,17 @@ def _bash_quote(val: str) -> str:
 
 
 def _sta_script_content(ssid: str, psk: str) -> str:
-    tpl = r"""#!/usr/bin/env bash
+    # SSID ve PSK'yi bash için güvenli şekilde quote et
+    ssid_quoted = _bash_quote(ssid)
+    psk_quoted = _bash_quote(psk)
+
+    tpl = f"""#!/usr/bin/env bash
 set -euo pipefail
 LOG=/var/log/wifi_mode.log
-SSID={SSID}
-PSK={PSK}
+SSID={ssid_quoted}
+PSK={psk_quoted}
 # Yardımcı: NM hazır mı bekle
-nm_wait() {
+nm_wait() {{
   if command -v nm-online >/dev/null 2>&1; then
     echo "waiting for NetworkManager..." | tee -a "$LOG"
     nm-online -q --timeout=20 2>&1 | tee -a "$LOG" || true
@@ -213,7 +217,7 @@ nm_wait() {
     # nm-online yoksa kısa bir bekleme
     sleep 3
   fi
-}
+}}
 
 # Temizlik: olası kalıntı wpa_supplicant süreçlerini durdur
 if command -v killall >/dev/null 2>&1; then
@@ -288,7 +292,7 @@ echo "[7b] Listing available networks..." | tee -a "$LOG"
 nmcli dev wifi list 2>&1 | tee -a "$LOG" || true
 
 # Bağlantı deneme fonksiyonu
-connect_wifi() {
+connect_wifi() {{
   local attempt=$1
   echo "[$attempt. deneme] Attempting to connect to $SSID..." | tee -a "$LOG"
   
@@ -305,7 +309,7 @@ connect_wifi() {
   
   echo "✗ Attempt $attempt failed!" | tee -a "$LOG"
   return 1
-}
+}}
 
 # Bağlantı denemeleri
 echo "[8/8] Starting connection attempts..." | tee -a "$LOG"
