@@ -230,13 +230,13 @@ echo "Target SSID: $SSID" | tee -a "$LOG"
 echo "========================================" | tee -a "$LOG"
 
 # AP modunu durdur
-echo "[1/8] Stopping AP mode services..." | tee -a "$LOG"
+echo "[1/9] Stopping AP mode services..." | tee -a "$LOG"
 systemctl disable --now hostapd 2>&1 | tee -a "$LOG" || true
 systemctl disable --now dnsmasq 2>&1 | tee -a "$LOG" || true
 systemctl disable --now wlan0-static.service 2>&1 | tee -a "$LOG" || true
 
 # Arayüzü temizle
-echo "[2/8] Flushing wlan0 IP addresses..." | tee -a "$LOG"
+echo "[2/9] Flushing wlan0 IP addresses..." | tee -a "$LOG"
 ip addr flush dev wlan0 2>&1 | tee -a "$LOG" || true
 ip link set wlan0 down 2>&1 | tee -a "$LOG" || true
 sleep 1
@@ -244,7 +244,7 @@ ip link set wlan0 up 2>&1 | tee -a "$LOG" || true
 sleep 2
 
 # NetworkManager'ı etkinleştir ve yeniden başlat
-echo "[3/8] Configuring and restarting NetworkManager..." | tee -a "$LOG"
+echo "[3/9] Configuring and restarting NetworkManager..." | tee -a "$LOG"
 mkdir -p /etc/NetworkManager/conf.d
 if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
   sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf 2>&1 | tee -a "$LOG" || true
@@ -257,14 +257,23 @@ nm_wait
 nmcli general status 2>&1 | tee -a "$LOG" || true
 
 # WiFi'ı aç ve arayüzü NM'e emanet et
-echo "[4/8] Enabling WiFi and handing wlan0 to NM..." | tee -a "$LOG"
+echo "[4/9] Enabling WiFi and handing wlan0 to NM..." | tee -a "$LOG"
 rfkill unblock wifi 2>&1 | tee -a "$LOG" || true
 nmcli radio wifi on 2>&1 | tee -a "$LOG" || true
 nmcli dev set wlan0 managed yes 2>&1 | tee -a "$LOG" || true
 sleep 2
 
+# ÖNEMLİ: Hedef SSID dışındaki TÜM Wi-Fi bağlantılarının autoconnect'ini KAPAT
+echo "[4b/9] Disabling autoconnect for all other WiFi connections..." | tee -a "$LOG"
+nmcli -t -f NAME,TYPE con show | grep ':802-11-wireless$' | cut -d: -f1 | while IFS= read -r conn_name; do
+  if [ "$conn_name" != "$SSID" ]; then
+    echo "  Disabling autoconnect for: $conn_name" | tee -a "$LOG"
+    nmcli con modify "$conn_name" connection.autoconnect no 2>&1 | tee -a "$LOG" || true
+  fi
+done
+
 # Bağlantı profilini hazırla
-echo "[5/8] Ensuring connection profile..." | tee -a "$LOG"
+echo "[5/9] Ensuring connection profile..." | tee -a "$LOG"
 if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
   echo "Connection exists, updating..." | tee -a "$LOG"
   nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto 2>&1 | tee -a "$LOG" || true
@@ -275,7 +284,7 @@ else
 fi
 
 # Değişikliklerden sonra NM'i tazele
-echo "[6/8] Reloading NM connections and restarting NM..." | tee -a "$LOG"
+echo "[6/9] Reloading NM connections and restarting NM..." | tee -a "$LOG"
 nmcli con reload 2>&1 | tee -a "$LOG" || true
 nmcli general reload 2>&1 | tee -a "$LOG" || true
 sudo systemctl restart NetworkManager 2>&1 | tee -a "$LOG" || true
@@ -284,7 +293,7 @@ sudo systemctl restart NetworkManager || true
 nm_wait
 
 # Ağları tarayıp bağlanmayı dene
-echo "[7/8] Rescanning WiFi networks..." | tee -a "$LOG"
+echo "[7/9] Rescanning WiFi networks..." | tee -a "$LOG"
 nmcli dev wifi rescan 2>&1 | tee -a "$LOG" || true
 sleep 3
 
@@ -312,7 +321,7 @@ connect_wifi() {{
 }}
 
 # Bağlantı denemeleri
-echo "[8/8] Starting connection attempts..." | tee -a "$LOG"
+echo "[8/9] Starting connection attempts..." | tee -a "$LOG"
 CONNECTED=false
 for i in 1 2 3; do
   if connect_wifi $i; then
@@ -934,6 +943,9 @@ def connect_sta_network():
                 "message": "STA mode script executed successfully"
             }, "INFO")
         else:
+            syslog.log_event("wifi", "STA_MODE_FAILED", {
+                "ssid": ssid,
+                "user": username,
                 "error": rmsg,
                 "message": "STA mode script execution failed"
             }, "ERROR")

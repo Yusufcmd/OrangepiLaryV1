@@ -760,6 +760,15 @@ systemctl enable --now NetworkManager || true
 rfkill unblock wifi || true
 nmcli radio wifi on || true
 
+# ÖNEMLİ: Hedef SSID dışındaki TÜM Wi-Fi bağlantılarının autoconnect'ini KAPAT
+echo "Disabling autoconnect for other WiFi connections..." | tee -a "$LOG"
+nmcli -t -f NAME,TYPE con show | grep ':802-11-wireless$' | cut -d: -f1 | while IFS= read -r conn_name; do
+  if [ "$conn_name" != "$SSID" ]; then
+    echo "  Disabling autoconnect for: $conn_name" | tee -a "$LOG"
+    nmcli con modify "$conn_name" connection.autoconnect no 2>&1 | tee -a "$LOG" || true
+  fi
+done
+
 if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
   nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
 else
