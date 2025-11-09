@@ -611,11 +611,35 @@ _batt_stop_evt = threading.Event()
 _shutdown_stop_evt = threading.Event()
 
 def _set_batt_value(new_val: int):
-    """0-100 clamp + basit hareketli ortalama."""
+    """0-100 clamp + basit hareketli ortalama + kullanıcı görünümü için dönüşüm.
+
+    PWM okuma mantığı:
+    - PWM 100% olduğunda 99 olarak sınırla (100'de sıfır görünüyor)
+    - Gerçek batarya %15'i kullanıcıya %0 olarak göster
+    - 15-99 aralığını 0-99 aralığına ölçeklendir
+    """
     global batt_value
+
+    # Önce 0-100 arası clamp yap
     v = max(0, min(100, int(new_val)))
+
+    # PWM 100% ise 99 yap (100'de okuma sıfır görünüyor)
+    if v >= 100:
+        v = 99
+
+    # Ham değeri kaydet
     last_10_readings.append(v)
-    batt_value = int(round(sum(last_10_readings) / len(last_10_readings)))
+    raw_average = int(round(sum(last_10_readings) / len(last_10_readings)))
+
+    # Kullanıcı görünümü için dönüşüm yap:
+    # 0-15 arası -> 0
+    # 15-99 arası -> 0-99 arası lineer ölçekleme
+    if raw_average <= 15:
+        batt_value = 0
+    else:
+        # 15-99 aralığını 0-99 aralığına ölçekle
+        # Formül: (değer - 15) * 99 / (99 - 15)
+        batt_value = int(round((raw_average - 15) * 99 / 84))
 
 # === Zaman yardımcıları (monotonic ns) ===
 def _now_ns():
