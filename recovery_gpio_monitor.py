@@ -341,6 +341,11 @@ def setup_led_gpio():
         _led_line = _led_chip.get_line(GPIO_LED_OFFSET)
         _led_line.request(consumer="pwm-monitor-led", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
         logger.info(f"✓ LED GPIO (PI2) hazır: {GPIO_LED_CHIP}:{GPIO_LED_OFFSET}")
+
+        # LED'i başlangıçta aç (sürekli yanma modunda)
+        set_led(True)
+        logger.info("✓ LED sürekli yanma modunda")
+
         return True
     except Exception as e:
         logger.warning(f"⚠ LED GPIO açılamadı: {e}")
@@ -392,13 +397,14 @@ def start_led_blink():
     logger.debug("LED yanıp sönme başladı")
 
 def stop_led_blink():
-    """LED yanıp sönmeyi durdur"""
+    """LED yanıp sönmeyi durdur ve sürekli yanma moduna geç"""
     global _led_blink_stop
     _led_blink_stop.set()
     if _led_blink_thread:
         _led_blink_thread.join(timeout=1.0)
-    set_led(False)
-    logger.debug("LED yanıp sönme durduruldu")
+    # LED'i tekrar sürekli yanık duruma getir
+    set_led(True)
+    logger.debug("LED yanıp sönme durduruldu - sürekli yanma moduna geçildi")
 
 # ==================== PWM ÖLÇÜMÜ ====================
 def measure_pwm_duty_cycle(line, sample_count=PWM_SAMPLE_COUNT):
