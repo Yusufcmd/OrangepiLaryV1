@@ -52,11 +52,14 @@ cat > "$SUDOERS_FILE" <<'EOF'
 # Clary projesi için gerekli sudo yetkileri (rise kullanıcısı)
 # WiFi yönetimi ve servis kontrolü için
 
+# Systemd servisleri
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl start hostapd
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop hostapd
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart hostapd
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable hostapd
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable hostapd
+rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl unmask hostapd
+rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl status hostapd
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl start dnsmasq
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop dnsmasq
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dnsmasq
@@ -73,28 +76,53 @@ rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart wlan0-static.service
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable wlan0-static.service
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable wlan0-static.service
 rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl unmask hostapd
+rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable --now *
+rise ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable --now *
+
+# Network araçları
+rise ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
 rise ALL=(ALL) NOPASSWD: /usr/sbin/rfkill unblock wifi
-rise ALL=(ALL) NOPASSWD: /usr/bin/nmcli *
-rise ALL=(ALL) NOPASSWD: /usr/sbin/ip *
-rise ALL=(ALL) NOPASSWD: /usr/bin/install -D -m * * /etc/hostapd/hostapd.conf
-rise ALL=(ALL) NOPASSWD: /usr/bin/install -D -m * * /etc/default/hostapd
-rise ALL=(ALL) NOPASSWD: /usr/bin/install -D -m * * /etc/dnsmasq.d/ap.conf
-rise ALL=(ALL) NOPASSWD: /usr/bin/install -d -m * /opt/lscope/bin
-rise ALL=(ALL) NOPASSWD: /usr/bin/install -D -m * * /opt/lscope/bin/*
-rise ALL=(ALL) NOPASSWD: /usr/bin/cp * /etc/hostapd/hostapd.conf
-rise ALL=(ALL) NOPASSWD: /usr/bin/cp * /etc/default/hostapd
+rise ALL=(ALL) NOPASSWD: /usr/bin/nmcli
+rise ALL=(ALL) NOPASSWD: /usr/sbin/ip
+rise ALL=(ALL) NOPASSWD: /usr/bin/iw
+
+# Dosya işlemleri - install komutu (tüm parametrelerle)
+rise ALL=(ALL) NOPASSWD: /usr/bin/install
+rise ALL=(ALL) NOPASSWD: /bin/install
+
+# Dosya işlemleri - cp, mv, tee, cat, mkdir
+rise ALL=(ALL) NOPASSWD: /usr/bin/cp
+rise ALL=(ALL) NOPASSWD: /bin/cp
+rise ALL=(ALL) NOPASSWD: /usr/bin/mv
+rise ALL=(ALL) NOPASSWD: /bin/mv
+rise ALL=(ALL) NOPASSWD: /usr/bin/tee
+rise ALL=(ALL) NOPASSWD: /bin/tee
+rise ALL=(ALL) NOPASSWD: /usr/bin/cat
+rise ALL=(ALL) NOPASSWD: /bin/cat
+rise ALL=(ALL) NOPASSWD: /usr/bin/mkdir
+rise ALL=(ALL) NOPASSWD: /bin/mkdir
+rise ALL=(ALL) NOPASSWD: /usr/bin/rm
+rise ALL=(ALL) NOPASSWD: /bin/rm
+rise ALL=(ALL) NOPASSWD: /usr/bin/chmod
+rise ALL=(ALL) NOPASSWD: /bin/chmod
+rise ALL=(ALL) NOPASSWD: /usr/bin/chown
+rise ALL=(ALL) NOPASSWD: /bin/chown
+
+# sed komutu (config dosyalarını düzenlemek için)
+rise ALL=(ALL) NOPASSWD: /usr/bin/sed
+rise ALL=(ALL) NOPASSWD: /bin/sed
+
+# WiFi mod scriptleri
 rise ALL=(ALL) NOPASSWD: /opt/lscope/bin/sta_mode.sh
 rise ALL=(ALL) NOPASSWD: /opt/lscope/bin/ap_mode.sh
 rise ALL=(ALL) NOPASSWD: /opt/lscope/bin/ap7_mode.sh
 rise ALL=(ALL) NOPASSWD: /usr/local/sbin/sta_mode.sh
 rise ALL=(ALL) NOPASSWD: /usr/local/sbin/ap_mode.sh
 rise ALL=(ALL) NOPASSWD: /usr/local/sbin/ap7_mode.sh
-rise ALL=(ALL) NOPASSWD: /usr/bin/sed -i * /etc/hostapd/hostapd.conf
-rise ALL=(ALL) NOPASSWD: /usr/bin/sed -i * /etc/default/hostapd
-rise ALL=(ALL) NOPASSWD: /usr/bin/sed -i * /etc/NetworkManager/conf.d/unmanaged.conf
-rise ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /etc/NetworkManager/conf.d
-rise ALL=(ALL) NOPASSWD: /usr/bin/rm -f /etc/NetworkManager/conf.d/unmanaged.conf
+
+# Bash (scriptler için)
+rise ALL=(ALL) NOPASSWD: /bin/bash /opt/lscope/bin/*.sh
+rise ALL=(ALL) NOPASSWD: /bin/bash /usr/local/sbin/*.sh
 EOF
 
 chmod 440 "$SUDOERS_FILE"
@@ -133,4 +161,3 @@ echo ""
 echo "Artık AP moduna geçebilirsiniz!"
 echo "Test için: sudo -u rise sudo -n systemctl status hostapd"
 echo ""
-
