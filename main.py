@@ -1882,6 +1882,58 @@ def update_system():
         }
 
 
+@app.route("/captive_portal_logs")
+def captive_portal_logs():
+    """Captive Portal kurulum ve servis loglarını görüntüle"""
+    if "uid" not in session:
+        return redirect(url_for("login"))
+
+    logs = {
+        "setup_log": "",
+        "service_log": "",
+        "service_status": "",
+        "dnsmasq_log": ""
+    }
+
+    try:
+        # Kurulum log'u
+        setup_log_path = "/var/log/captive_portal_setup.log"
+        if os.path.exists(setup_log_path):
+            with open(setup_log_path, "r") as f:
+                logs["setup_log"] = f.read()
+
+        # Servis log'u
+        service_log_path = "/var/log/captive_portal_spoof.log"
+        if os.path.exists(service_log_path):
+            with open(service_log_path, "r") as f:
+                logs["service_log"] = f.read()
+
+        # Servis durumu
+        status_result = subprocess.run(
+            ["systemctl", "status", "captive-portal-spoof.service"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        logs["service_status"] = status_result.stdout + "\n" + status_result.stderr
+
+        # dnsmasq log'u (son 50 satır)
+        dnsmasq_result = subprocess.run(
+            ["tail", "-n", "50", "/var/log/syslog"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        # Sadece dnsmasq satırlarını filtrele
+        dnsmasq_lines = [line for line in dnsmasq_result.stdout.split('\n') if 'dnsmasq' in line.lower()]
+        logs["dnsmasq_log"] = '\n'.join(dnsmasq_lines[-30:])  # Son 30 satır
+
+    except Exception as e:
+        logger.error(f"Log okuma hatası: {e}")
+
+    return render_template("captive_logs.html", logs=logs)
+
+
 @app.route("/install_captive_portal", methods=["POST"])
 def install_captive_portal():
     """Captive Portal kurulumu yap"""
@@ -1952,9 +2004,22 @@ def install_captive_portal():
         )
 
         if install_result.returncode != 0:
-            raise Exception(f"Captive Portal kurulumu başarısız: {install_result.stderr}")
+            logger.error(f"Kurulum script hatası: {install_result.stderr}")
+            # Hata durumunda bile stdout'u göster
+            if install_result.stdout:
+                for line in install_result.stdout.strip().split('\n')[-10:]:
+                    if line.strip():
+                        output_lines.append(f"  → {line.strip()}")
+            raise Exception(f"Captive Portal kurulumu başarısız: {install_result.stderr[:500]}")
 
         output_lines.append("✓ Captive Portal servisleri kuruldu")
+
+        # Script çıktısının önemli satırlarını ekle
+        if install_result.stdout:
+            important_lines = [l for l in install_result.stdout.split('\n') if '✓' in l or 'Setup Complete' in l or 'kuruldu' in l.lower()]
+            for line in important_lines[-5:]:
+                if line.strip():
+                    output_lines.append(f"  → {line.strip()}")
 
         # 4. Servisi başlat
         output_lines.append("🚀 Servis başlatılıyor...")
