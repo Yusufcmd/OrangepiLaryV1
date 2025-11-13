@@ -79,10 +79,6 @@
             cursor: not-allowed;
             transform: none;
         }
-        /* Captive Portal butonu için özel hover efekti */
-        #captiveBtn:hover:not(:disabled) {
-            box-shadow: 0 10px 25px rgba(56, 239, 125, 0.4);
-        }
         .back-btn {
             width: 100%;
             padding: 12px;
@@ -169,25 +165,10 @@
             <p><strong>GitHub URL:</strong> https://github.com/Yusufcmd/OrangepiLaryV1.git</p>
         </div>
 
-        <div class="info-box" style="border-left-color: #38ef7d;">
-            <p><strong>🛡️ Captive Portal Nedir?</strong></p>
-            <p style="font-size: 12px; margin-top: 8px;">
-                AP modundayken cihazların "internet yok" diyerek ağdan ayrılmasını engeller.
-                Android, iOS, Windows cihazlar Orange Pi ağında kalır.
-            </p>
-        </div>
-
         <button class="update-btn" id="updateBtn" onclick="startUpdate()">
             <span id="btnText">Güncellemeleri Çek</span>
         </button>
 
-        <button class="update-btn" id="captiveBtn" onclick="installCaptivePortal()" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
-            <span id="captiveBtnText">🛡️ Captive Portal Kur</span>
-        </button>
-
-        <a href="/captive_portal_logs" class="back-btn" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); margin-bottom: 10px;">
-            📊 Captive Portal Loglarını Görüntüle
-        </a>
 
         <a href="/" class="back-btn">⬅️ Ana Sayfaya Dön</a>
 
@@ -261,63 +242,6 @@
             });
         }
 
-        function installCaptivePortal() {
-            const captiveBtn = document.getElementById('captiveBtn');
-            const captiveBtnText = document.getElementById('captiveBtnText');
-            const statusBox = document.getElementById('statusBox');
-            const logContainer = document.getElementById('logContainer');
-
-            // Disable button and show loading
-            captiveBtn.disabled = true;
-            captiveBtnText.innerHTML = '<span class="spinner"></span>Kuruluyor...';
-
-            // Show status box and clear previous logs
-            statusBox.classList.add('active');
-            logContainer.innerHTML = '';
-
-            addLog('🛡️ Captive Portal kurulumu başlatıldı...', 'info');
-            addLog('📦 Flask ve bağımlılıklar yükleniyor...', 'info');
-
-            // Make AJAX request
-            fetch('/install_captive_portal', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token() }}'
-                }
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    addLog('✅ ' + data.message, 'success');
-                    if (data.output) {
-                        data.output.split('\n').forEach(line => {
-                            if (line.trim()) {
-                                const logType = line.includes('✓') || line.includes('success') ? 'success' :
-                                               line.includes('✗') || line.includes('error') || line.includes('FAIL') ? 'error' :
-                                               line.includes('⚠') || line.includes('warning') ? 'warning' : 'info';
-                                addLog('  ' + line, logType);
-                            }
-                        });
-                    }
-                    addLog('🎉 Captive Portal başarıyla kuruldu!', 'success');
-                    addLog('ℹ️ AP moduna geçildiğinde otomatik aktif olacak', 'info');
-                    captiveBtnText.textContent = '✓ Kurulum Tamamlandı';
-                } else {
-                    addLog('❌ ' + data.message, 'error');
-                    if (data.error) {
-                        addLog('Hata detayı: ' + data.error, 'error');
-                    }
-                    captiveBtn.disabled = false;
-                    captiveBtnText.textContent = '🛡️ Tekrar Dene';
-                }
-            })
-            .catch(error => {
-                addLog('❌ Bağlantı hatası: ' + error.message, 'error');
-                captiveBtn.disabled = false;
-                captiveBtnText.textContent = '🛡️ Tekrar Dene';
-            });
-        }
     </script>
 </body>
 </html>
