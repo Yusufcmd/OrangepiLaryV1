@@ -234,6 +234,10 @@ echo "[1/9] Stopping AP mode services..." | tee -a "$LOG"
 systemctl disable --now hostapd 2>&1 | tee -a "$LOG" || true
 systemctl disable --now dnsmasq 2>&1 | tee -a "$LOG" || true
 systemctl disable --now wlan0-static.service 2>&1 | tee -a "$LOG" || true
+# Captive portal servislerini durdur
+systemctl disable --now captive-portal-spoof.service 2>&1 | tee -a "$LOG" || true
+systemctl disable --now captive-iptables.service 2>&1 | tee -a "$LOG" || true
+echo "[1/9] Captive portal services stopped" | tee -a "$LOG"
 
 # Arayüzü temizle
 echo "[2/9] Flushing wlan0 IP addresses..." | tee -a "$LOG"
@@ -431,9 +435,15 @@ systemctl enable --now wlan0-static.service || true
 systemctl enable --now dnsmasq || true
 systemctl enable --now hostapd || true
 
-systemctl restart hostapd || true
+# Captive Portal / Connectivity Check Spoofing servisleri
+echo "[ap_mode] Starting captive portal services..." | tee -a "$LOG"
+systemctl enable --now captive-portal-spoof.service || true
+systemctl enable --now captive-iptables.service || true
 
-echo "[ap_mode OK] $(date '+%F %T')  (SSID: {ap_ssid})" | tee -a "$LOG"
+systemctl restart hostapd || true
+systemctl restart dnsmasq || true
+
+echo "[ap_mode OK] $(date '+%F %T')  (SSID: {ap_ssid}, Captive Portal: Active)" | tee -a "$LOG"
 """
 
 # Ortak: script çalıştır
