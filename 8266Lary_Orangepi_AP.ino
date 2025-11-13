@@ -285,6 +285,9 @@ void exitRecoveryLockdown() {
   ledMode = recordState ? LED_RECORD : LED_NORMAL;
   ledSet(true);
   ledTs = millis();
+
+  Serial.println("[RECOVERY-LOCK] Süre tamamlandı, otomatik GRACE kapatma başlatılıyor...");
+  beginShutdownGrace(USER_REQUEST);
 }
 
 // --- YENİ: LED Zamanlamaları ---
@@ -749,6 +752,11 @@ void evaluatePressSequence() {
       Serial.println("[OTA] 10x -> OTA açılıyor");
       enterOtaMode();
     }
+  }
+  else if (n == 7) {
+    // 7x → %50 duty, 10 sn recovery PWM
+    startRecoveryPwm(PWM_RANGE / 2, 10000);
+    Serial.println("[ACTION] 7x -> PIN_RECOVERY %50 duty, 10sn PWM gönderildi.");
   }
   else if (n == 5) {
     // 5x → %25 duty, 5 sn recovery PWM

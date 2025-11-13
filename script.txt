@@ -1,4 +1,4 @@
-STA↔AP script’lerini rtclary20051 için yaz
+STA↔AP script’lerini rtclary20052 için yaz
 
 # === Wi-Fi mod scriptlerini kur (STA/AP) ve gerekli son "restart"ları ekle ===
 set -euo pipefail
@@ -38,6 +38,8 @@ nmcli dev wifi rescan || true
 nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
 
 # İstenen ek: işlem bitiminde NetworkManager'ı yeniden başlat
+sudo systemctl restart NetworkManager || true
+sleep 5
 systemctl restart NetworkManager || true
 
 echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
@@ -59,11 +61,12 @@ cat >/etc/NetworkManager/conf.d/unmanaged.conf <<EOF
 [keyfile]
 unmanaged-devices=interface-name:${IFACE}
 EOF
+sleep 5
 systemctl restart NetworkManager || true
 
 # hostapd.conf içeriğinde SSID/PSK'yi garanti et
 if [ -f /etc/hostapd/hostapd.conf ]; then
-  sed -i 's/^ssid=.*/ssid=rtclary20051/' /etc/hostapd/hostapd.conf || true
+  sed -i 's/^ssid=.*/ssid=rtclary20052/' /etc/hostapd/hostapd.conf || true
   sed -i 's/^wpa_passphrase=.*/wpa_passphrase=simclever12345/' /etc/hostapd/hostapd.conf || true
 fi
 if [ -f /etc/default/hostapd ]; then
@@ -79,9 +82,10 @@ systemctl enable --now dnsmasq
 systemctl enable --now hostapd
 
 # İstenen ek: işlem bitiminde hostapd'yi yeniden başlat
+sleep 5
 systemctl restart hostapd || true
 
-echo "[ap_mode OK] $(date '+%F %T')  (SSID: rtclary20051)" | tee -a "$LOG"
+echo "[ap_mode OK] $(date '+%F %T')  (SSID: rtclary20052)" | tee -a "$LOG"
 SH
 
 # --- CRLF temizle ve çalıştırılabilir yap ---
