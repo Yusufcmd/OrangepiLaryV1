@@ -129,7 +129,6 @@ except Exception:
 GPIO = None
 _backend = None
 _import_errors = []
-led_pin = None
 
 USE_GPIOD = False
 try:
@@ -146,7 +145,7 @@ prefer = (os.environ.get("GPIO_BACKEND", "") or "").lower()
 
 def _try_import_gpio():
     """GPIO alternatif backend (gerekirse)."""
-    global GPIO, _backend, led_pin
+    global GPIO, _backend
     if prefer in ("", "safe_gpio"):
         try:
             from safe_gpio import GPIO as _G
@@ -181,12 +180,6 @@ def _try_import_gpio():
     except Exception as e:
         logger.warning(f"GPIO setmode hatası: {e}")
 
-    try:
-        led_pin = int(os.environ.get("LED_PIN", "31"))  # BOARD 31 (PI15)
-        GPIO.setup(led_pin, GPIO.OUT, initial=GPIO.LOW)
-    except Exception as e:
-        logger.warning(f"LED pin init başarısız: {e}")
-        led_pin = None
 
 _try_import_gpio()
 
