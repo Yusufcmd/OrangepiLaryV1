@@ -13,13 +13,14 @@ echo "[Captive Portal Setup] $(date '+%F %T')" | tee -a "$LOG"
 if ! command -v python3 &>/dev/null; then
     echo "Python3 yükleniyor..." | tee -a "$LOG"
     apt-get update
-    apt-get install -y python3 python3-pip
+    apt-get install -y python3
 fi
 
-# Flask kurulu değilse kur
+# Flask kurulu değilse sistem paketi olarak kur (externally-managed-environment hatası için)
 if ! python3 -c "import flask" 2>/dev/null; then
-    echo "Flask yükleniyor..." | tee -a "$LOG"
-    pip3 install flask
+    echo "Flask yükleniyor (sistem paketi)..." | tee -a "$LOG"
+    apt-get update
+    apt-get install -y python3-flask
 fi
 
 # Captive portal script'ini /opt/lscope/bin'e kopyala
