@@ -1881,6 +1881,153 @@ def update_system():
             "error": str(e)
         }
 
+
+@app.route("/install_captive_portal", methods=["POST"])
+def install_captive_portal():
+    """Captive Portal kurulumu yap"""
+    if "uid" not in session:
+        return {"success": False, "message": "Oturum gerekli"}, 401
+
+    try:
+        logger.info("Captive Portal kurulumu başlatıldı")
+
+        # Çalışma dizini
+        work_dir = "/home/rise/clary"
+        if not os.path.exists(work_dir):
+            work_dir = BASE_DIR  # Fallback to current directory
+
+        logger.info(f"Çalışma dizini: {work_dir}")
+
+        output_lines = []
+
+        # 1. apt-get update
+        output_lines.append("📦 Paket listesi güncelleniyor...")
+        logger.info("apt-get update çalıştırılıyor")
+
+        update_result = subprocess.run(
+            ["sudo", "apt-get", "update"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=work_dir
+        )
+
+        if update_result.returncode != 0:
+            logger.warning(f"apt-get update uyarısı: {update_result.stderr}")
+
+        output_lines.append("✓ Paket listesi güncellendi")
+
+        # 2. Flask kurulumu
+        output_lines.append("🐍 Flask yükleniyor...")
+        logger.info("Flask kurulumu başlatılıyor")
+
+        flask_result = subprocess.run(
+            ["sudo", "apt-get", "install", "-y", "python3-flask"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=work_dir
+        )
+
+        if flask_result.returncode != 0:
+            raise Exception(f"Flask kurulumu başarısız: {flask_result.stderr}")
+
+        output_lines.append("✓ Flask başarıyla kuruldu")
+
+        # 3. Captive Portal kurulum script'ini çalıştır
+        output_lines.append("🛡️ Captive Portal servisleri kuruluyor...")
+        logger.info("install_captive_portal.sh çalıştırılıyor")
+
+        install_script = os.path.join(work_dir, "install_captive_portal.sh")
+
+        if not os.path.exists(install_script):
+            raise Exception(f"Kurulum script'i bulunamadı: {install_script}")
+
+        install_result = subprocess.run(
+            ["sudo", "bash", install_script],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=work_dir
+        )
+
+        if install_result.returncode != 0:
+            raise Exception(f"Captive Portal kurulumu başarısız: {install_result.stderr}")
+
+        output_lines.append("✓ Captive Portal servisleri kuruldu")
+
+        # 4. Servisi başlat
+        output_lines.append("🚀 Servis başlatılıyor...")
+        logger.info("captive-portal-spoof.service başlatılıyor")
+
+        start_result = subprocess.run(
+            ["sudo", "systemctl", "start", "captive-portal-spoof.service"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if start_result.returncode != 0:
+            logger.warning(f"Servis başlatma uyarısı: {start_result.stderr}")
+            output_lines.append("⚠ Servis başlatılamadı (AP modunda değilsiniz?)")
+        else:
+            output_lines.append("✓ Servis başlatıldı")
+
+        # 5. Servisi etkinleştir (otomatik başlatma)
+        output_lines.append("⚙️ Otomatik başlatma etkinleştiriliyor...")
+        logger.info("captive-portal-spoof.service enable ediliyor")
+
+        enable_result = subprocess.run(
+            ["sudo", "systemctl", "enable", "captive-portal-spoof.service"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if enable_result.returncode == 0:
+            output_lines.append("✓ Otomatik başlatma etkinleştirildi")
+
+        # Başarı
+        output_lines.append("")
+        output_lines.append("=" * 50)
+        output_lines.append("✅ Captive Portal kurulumu tamamlandı!")
+        output_lines.append("=" * 50)
+        output_lines.append("")
+        output_lines.append("ℹ️ AP moduna geçildiğinde otomatik aktif olacak")
+        output_lines.append("ℹ️ Client modunda otomatik pasif olacak")
+
+        full_output = "\n".join(output_lines)
+        logger.info("Captive Portal kurulumu başarıyla tamamlandı")
+
+        return {
+            "success": True,
+            "message": "Captive Portal başarıyla kuruldu",
+            "output": full_output
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.error("Captive Portal kurulumu zaman aşımına uğradı")
+        return {
+            "success": False,
+            "message": "Kurulum zaman aşımına uğradı",
+            "error": "Komutlar belirlenen süre içinde tamamlanamadı"
+        }
+    except FileNotFoundError as e:
+        logger.error(f"Dosya bulunamadı: {e}")
+        return {
+            "success": False,
+            "message": "Kurulum dosyaları bulunamadı",
+            "error": str(e)
+        }
+    except Exception as e:
+        logger.error(f"Captive Portal kurulum hatası: {e}")
+        return {
+            "success": False,
+            "message": "Kurulum başarısız oldu",
+            "error": str(e)
+        }
+
+
 # ================================ Temizlik ================================
 def cleanup_resources():
     logger.info("Kapanış — kaynak temizleniyor.")
