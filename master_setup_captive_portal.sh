@@ -25,8 +25,14 @@ NC='\033[0m' # No Color
 
 # Log dosyası
 MASTER_LOG="/var/log/captive_portal_master_setup.log"
+
+# Proje dizini - git pull ile /home/rise/clary'de
+PROJECT_DIR="/home/rise/clary"
 INSTALL_DIR="/opt/lscope"
 BIN_DIR="$INSTALL_DIR/bin"
+
+# Orange Pi hostname
+EXPECTED_HOSTNAME="RTCLARY20050"
 
 ################################################################################
 # Yardımcı Fonksiyonlar
@@ -63,6 +69,37 @@ check_root() {
         print_error "Bu script root olarak çalıştırılmalıdır!"
         echo "Kullanım: sudo bash $0"
         exit 1
+    fi
+}
+
+check_hostname() {
+    local current_hostname=$(hostname)
+    print_step "Orange Pi hostname kontrol ediliyor..."
+    print_step "Mevcut hostname: $current_hostname"
+
+    if [ "$current_hostname" != "$EXPECTED_HOSTNAME" ]; then
+        print_warning "Hostname beklenen değerle uyuşmuyor (beklenen: $EXPECTED_HOSTNAME)"
+        print_warning "Devam ediliyor..."
+    else
+        print_success "Hostname doğru: $EXPECTED_HOSTNAME"
+    fi
+}
+
+check_project_directory() {
+    print_step "Proje dizini kontrol ediliyor..."
+
+    if [ -d "$PROJECT_DIR" ]; then
+        print_success "Proje dizini bulundu: $PROJECT_DIR"
+
+        # Ana Python dosyalarını kontrol et
+        if [ -f "$PROJECT_DIR/main.py" ] && [ -f "$PROJECT_DIR/wifi_change.py" ]; then
+            print_success "Proje dosyaları mevcut (git pull başarılı)"
+        else
+            print_warning "Bazı proje dosyaları eksik olabilir"
+        fi
+    else
+        print_warning "Proje dizini bulunamadı: $PROJECT_DIR"
+        print_warning "git pull yaptığınızdan emin olun"
     fi
 }
 
@@ -523,7 +560,15 @@ main() {
     print_success "Root yetkileri tamam"
     echo ""
 
-    # 2. Bağımlılık kontrolü
+    # 2. Hostname kontrolü
+    check_hostname
+    echo ""
+
+    # 3. Proje dizini kontrolü
+    check_project_directory
+    echo ""
+
+    # 4. Bağımlılık kontrolü
     print_step "Bağımlılıklar kontrol ediliyor..."
     if check_dependencies; then
         print_success "Tüm bağımlılıklar mevcut"
@@ -533,7 +578,7 @@ main() {
     fi
     echo ""
 
-    # 3. Dizinleri oluştur
+    # 5. Dizinleri oluştur
     print_step "Dizinler oluşturuluyor..."
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$BIN_DIR"
@@ -542,7 +587,7 @@ main() {
     print_success "Dizinler oluşturuldu"
     echo ""
 
-    # 4. Dosyaları oluştur
+    # 6. Dosyaları oluştur
     print_header "Dosyalar Oluşturuluyor"
     echo ""
 
@@ -554,21 +599,21 @@ main() {
 
     echo ""
 
-    # 5. DNS yapılandırmasını çalıştır
+    # 7. DNS yapılandırmasını çalıştır
     print_step "DNS yapılandırması yapılıyor..."
     if [ -f "$BIN_DIR/captive_portal_dns_config.sh" ]; then
         bash "$BIN_DIR/captive_portal_dns_config.sh" || print_warning "DNS yapılandırması başarısız"
     fi
     echo ""
 
-    # 6. Servisleri etkinleştir
+    # 8. Servisleri etkinleştir
     print_step "Servisler etkinleştiriliyor..."
     systemctl enable captive-portal-spoof.service
     systemctl enable captive-iptables.service
     print_success "Servisler etkinleştirildi"
     echo ""
 
-    # 7. Kurulum özeti
+    # 9. Kurulum özeti
     print_header "Kurulum Tamamlandı!"
     echo ""
     print_success "Fake Internet Server oluşturuldu"
