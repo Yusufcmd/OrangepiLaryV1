@@ -141,7 +141,7 @@ ip -4 addr show wlan0 2>/dev/null || echo "  wlan0 bulunamadı veya IP yok"
 print_header "7. DOSYA İZİNLERİ"
 
 echo "dnsmasq binary:"
-ls -lh $(which dnsmasq) 2>/dev/null || print_error "dnsmasq bulunamadı"
+which dnsmasq >/dev/null 2>&1 && ls -lh "$(which dnsmasq)" || print_error "dnsmasq bulunamadı"
 
 echo ""
 echo "Konfigürasyon dosyası izinleri:"
