@@ -812,19 +812,26 @@ def init_camera():
     global camera
 
     # Kamera kilidi kontrolü (QR okuma modu aktifse kamerayı açma)
-    if camera_lock and camera_lock.is_camera_locked():
-        logger.info("Kamera kilitli (QR okuma modu aktif), kamera açılmadı")
-        return False
+    if camera_lock:
+        try:
+            if camera_lock.is_camera_locked():
+                logger.info("Kamera kilitli (QR okuma modu aktif), kamera açılmadı")
+                return False
+        except (AttributeError, Exception) as e:
+            logger.debug(f"camera_lock kontrolü atlandı: {e}")
 
     if camera is not None and camera.isOpened():
         camera.release()
     camera = None
     for idx in range(3):
         try:
-            # Tekrar kilit kontrol�� (döngü sırasında kilit alınabilir)
-            if camera_lock and camera_lock.is_camera_locked():
-                logger.info("Kamera kilidi tespit edildi, kamera açma iptal")
-                return False
+            if camera_lock:
+                try:
+                    if camera_lock.is_camera_locked():
+                        logger.info("Kamera kilidi tespit edildi, kamera açma iptal")
+                        return False
+                except (AttributeError, Exception):
+                    pass
 
             cam = cv2.VideoCapture(idx)
             if cam.isOpened():
@@ -871,14 +878,18 @@ def generate_frames():
     while True:
         try:
             # Kamera kilidi kontrolü (QR okuma modu aktifse placeholder göster)
-            if camera_lock and camera_lock.is_camera_locked():
-                ph = create_placeholder("QR Okuma Modu Aktif...")
-                ret, jpeg = cv2.imencode('.jpg', ph, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                if ret:
-                    frame_bytes = jpeg.tobytes()
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                time.sleep(0.5)
-                continue
+            if camera_lock:
+                try:
+                    if camera_lock.is_camera_locked():
+                        ph = create_placeholder("QR Okuma Modu Aktif...")
+                        ret, jpeg = cv2.imencode('.jpg', ph, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                        if ret:
+                            frame_bytes = jpeg.tobytes()
+                            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                        time.sleep(0.5)
+                        continue
+                except (AttributeError, Exception):
+                    pass
 
             # Kamera kontrolü
             if camera is None or not camera.isOpened():
