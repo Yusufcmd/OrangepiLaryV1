@@ -110,8 +110,21 @@ def setup_led_gpio():
     """LED GPIO'sunu hazırla"""
     global _led_line, _led_chip
     try:
+        # Önce cihazı doğrula
+        if not verify_gpio_device(GPIO_LED_CHIP):
+            logger.warning(f"LED GPIO cihazı doğrulanamadı: {GPIO_LED_CHIP}")
+            return False
+
         _led_chip = gpiod.Chip(GPIO_LED_CHIP)
+        if _led_chip is None:
+            logger.warning("LED GPIO chip açılamadı")
+            return False
+
         _led_line = _led_chip.get_line(GPIO_LED_OFFSET)
+        if _led_line is None:
+            logger.warning(f"LED GPIO line alınamadı: {GPIO_LED_OFFSET}")
+            return False
+
         _led_line.request(consumer="pwm-monitor-led", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
         logger.info(f"✓ LED GPIO (PI2) hazır: {GPIO_LED_CHIP}:{GPIO_LED_OFFSET}")
 
@@ -120,8 +133,11 @@ def setup_led_gpio():
         logger.info("✓ LED sürekli yanma modunda")
 
         return True
+    except OSError as e:
+        logger.warning(f"⚠ LED GPIO OSError: errno={e.errno}, {e}")
+        return False
     except Exception as e:
-        logger.warning(f"⚠ LED GPIO açılamadı: {e}")
+        logger.warning(f"⚠ LED GPIO açılamadı: {type(e).__name__}: {e}")
         return False
 
 def set_led(state: bool):
@@ -546,13 +562,56 @@ def trigger_recovery():
         return False
 
 # ==================== ANA DÖNGÜ ====================
+def verify_gpio_device(path):
+    """GPIO cihazının erişilebilir olduğunu doğrula"""
+    try:
+        if not os.path.exists(path):
+            logger.error(f"GPIO cihazı bulunamadı: {path}")
+            return False
+
+        # Cihaz dosyasının okunabilir olup olmadığını kontrol et
+        if not os.access(path, os.R_OK | os.W_OK):
+            logger.error(f"GPIO cihazına erişim izni yok: {path}")
+            return False
+
+        return True
+    except Exception as e:
+        logger.error(f"GPIO cihaz doğrulama hatası: {e}")
+        return False
+
 def open_chip(path):
     """GPIO chip'i aç"""
+    # Önce cihazı doğrula
+    if not verify_gpio_device(path):
+        raise RuntimeError(f"GPIO cihazı doğrulanamadı: {path}")
+
     try:
-        return gpiod.Chip(path, gpiod.Chip.OPEN_BY_PATH)
+        # gpiod versiyonuna göre chip açma
+        chip = None
+        try:
+            chip = gpiod.Chip(path, gpiod.Chip.OPEN_BY_PATH)
+            logger.debug(f"GPIO chip OPEN_BY_PATH ile açıldı: {path}")
+        except (AttributeError, TypeError):
+            # Eski gpiod versiyonu
+            chip = gpiod.Chip(path)
+            logger.debug(f"GPIO chip standart yöntemle açıldı: {path}")
+
+        # Chip'in gerçekten açıldığını doğrula
+        if chip is None:
+            raise RuntimeError("GPIO chip açılamadı")
+
+        return chip
+    except OSError as e:
+        if e.errno == 2:  # No such file or directory
+            logger.error(f"GPIO cihaz dosyası bulunamadı: {path}")
+        elif e.errno == 13:  # Permission denied
+            logger.error(f"GPIO erişim izni reddedildi: {path}")
+        else:
+            logger.error(f"GPIO chip açma hatası (errno {e.errno}): {e}")
+        raise
     except Exception as e:
-        logger.debug(f"OPEN_BY_PATH hatası, standart yöntem deneniyor: {e}")
-        return gpiod.Chip(path)
+        logger.error(f"Beklenmeyen GPIO chip hatası: {type(e).__name__}: {e}")
+        raise
 
 def request_input(chip, offset):
     """GPIO pinini input olarak ayarla"""
@@ -646,14 +705,51 @@ def main():
         logger.error("UYARI: Bu script root olarak çalıştırılmalı (sudo)")
         sys.exit(1)
 
-    # GPIO setup
+    # GPIO cihazlarının varlığını kontrol et
+    logger.info("GPIO cihazları kontrol ediliyor...")
+    if not os.path.exists(GPIO_CHIP):
+        logger.error(f"HATA: GPIO cihazı bulunamadı: {GPIO_CHIP}")
+        logger.error("Sistem gpio cihazlarını kontrol edin: ls -la /dev/gpiochip*")
+        sys.exit(1)
+
+    # GPIO erişim izinlerini kontrol et
+    if not os.access(GPIO_CHIP, os.R_OK | os.W_OK):
+        logger.error(f"HATA: GPIO cihazına erişim izni yok: {GPIO_CHIP}")
+        logger.error(f"İzinleri kontrol edin: ls -l {GPIO_CHIP}")
+        logger.error("Kullanıcıyı gpio grubuna ekleyin: sudo usermod -a -G gpio $USER")
+        sys.exit(1)
+
+    # GPIO setup - daha güvenli başlatma
+    chip = None
+    line = None
     try:
         logger.debug("GPIO chip açılıyor...")
         chip = open_chip(GPIO_CHIP)
         line = request_input(chip, GPIO_OFFSET)
         logger.info(f"✓ GPIO {GPIO_OFFSET} hazır")
+    except RuntimeError as e:
+        logger.error(f"HATA: GPIO başlatılamadı: {e}")
+        logger.error("GPIO cihazı doğrulaması başarısız. Donanım bağlantısını kontrol edin.")
+        sys.exit(1)
+    except OSError as e:
+        logger.error(f"HATA: GPIO erişim hatası (errno {e.errno}): {e}")
+        if e.errno == 5:  # Input/output error - SIGBUS'ın nedeni olabilir
+            logger.error("I/O hatası: GPIO donanım erişim hatası tespit edildi.")
+            logger.error("Olası nedenler:")
+            logger.error("  - GPIO kontrolcüsü düzgün başlatılmamış olabilir")
+            logger.error("  - Pin mapping yanlış olabilir")
+            logger.error("  - Donanım sorunu olabilir")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"HATA: GPIO açılamadı: {e}", exc_info=True)
+        logger.error(f"HATA: GPIO açılamadı: {type(e).__name__}: {e}", exc_info=True)
+        # Cleanup deneme
+        try:
+            if line:
+                line.release()
+            if chip:
+                chip.close()
+        except:
+            pass
         sys.exit(1)
 
     # LED setup
