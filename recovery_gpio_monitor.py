@@ -437,8 +437,77 @@ def is_duty_in_range(duty, target, tolerance=PWM_TOLERANCE):
     return (target - tolerance) <= duty <= (target + tolerance)
 
 # ==================== QR KOD OKUMA ====================
+def detect_qr_with_preprocessing(frame):
+    """
+    Görüntü ön işleme teknikleri kullanarak QR kod tespit et.
+    Farklı yöntemler sırasıyla denenir ve ilk başarılı sonuç döndürülür.
+    """
+    # 1. Orijinal frame'de dene
+    decoded_objects = pyzbar.decode(frame)
+    if decoded_objects:
+        logger.debug("QR kod orijinal frame'de bulundu")
+        return decoded_objects
+
+    # 2. Gri tonlama
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    decoded_objects = pyzbar.decode(gray)
+    if decoded_objects:
+        logger.debug("QR kod gri tonlamalı frame'de bulundu")
+        return decoded_objects
+
+    # 3. CLAHE (Contrast Limited Adaptive Histogram Equalization) ile kontrast iyileştirme
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(gray)
+    decoded_objects = pyzbar.decode(enhanced)
+    if decoded_objects:
+        logger.debug("QR kod CLAHE uygulanmış frame'de bulundu")
+        return decoded_objects
+
+    # 4. Otsu threshold
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    decoded_objects = pyzbar.decode(thresh)
+    if decoded_objects:
+        logger.debug("QR kod threshold uygulanmış frame'de bulundu")
+        return decoded_objects
+
+    # 5. Adaptive threshold
+    adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                     cv2.THRESH_BINARY, 11, 2)
+    decoded_objects = pyzbar.decode(adaptive)
+    if decoded_objects:
+        logger.debug("QR kod adaptive threshold frame'de bulundu")
+        return decoded_objects
+
+    # 6. Histogram eşitleme
+    equalized = cv2.equalizeHist(gray)
+    decoded_objects = pyzbar.decode(equalized)
+    if decoded_objects:
+        logger.debug("QR kod histogram eşitlenmiş frame'de bulundu")
+        return decoded_objects
+
+    # 7. Gaussian Blur + Threshold
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh_blur = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    decoded_objects = pyzbar.decode(thresh_blur)
+    if decoded_objects:
+        logger.debug("QR kod blur+threshold frame'de bulundu")
+        return decoded_objects
+
+    # 8. Negatif görüntü (ters çevirme)
+    inverted = cv2.bitwise_not(gray)
+    decoded_objects = pyzbar.decode(inverted)
+    if decoded_objects:
+        logger.debug("QR kod ters çevrilmiş frame'de bulundu")
+        return decoded_objects
+
+    return []
+
+
 def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
-    """Kameradan QR kod oku"""
+    """
+    Kameradan QR kod oku - İyileştirilmiş görüntü işleme ile
+    Farklı görüntü işleme teknikleri kullanarak QR kod okuma başarı oranını artırır.
+    """
     if cv2 is None or pyzbar is None:
         logger.error("HATA: OpenCV veya pyzbar yüklü değil!")
         return None
@@ -457,8 +526,16 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
         try:
             cap = cv2.VideoCapture(CAMERA_INDEX)
 
+            # Kamera ayarlarını optimize et
             if cap.isOpened():
+                # Çözünürlük ayarla (yüksek çözünürlük QR okumayı iyileştirir)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                # Autofocus açık olsun (varsa)
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+
                 logger.info(f"✓ Kamera açıldı (deneme {attempt + 1}/{max_retries})")
+                logger.debug(f"  Çözünürlük: {cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}")
                 break
 
             cap.release()
@@ -474,11 +551,14 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
         return None
 
     logger.info("✓ Kamera açıldı. QR kod bekleniyor...")
+    logger.info("  (Farklı görüntü işleme teknikleri kullanılarak tarama yapılıyor)")
     start_time = time.time()
     qr_data = None
 
     try:
         frame_count = 0
+        skip_frames = 2  # İlk birkaç frame'i atla (kamera ayarlaması için)
+
         while (time.time() - start_time) < timeout:
             ret, frame = cap.read()
             if not ret:
@@ -488,25 +568,45 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
 
             frame_count += 1
 
-            # QR kodları tespit et
-            decoded_objects = pyzbar.decode(frame)
+            # İlk birkaç frame'i atla
+            if frame_count <= skip_frames:
+                continue
+
+            # Gelişmiş QR tespit fonksiyonunu kullan
+            decoded_objects = detect_qr_with_preprocessing(frame)
 
             for obj in decoded_objects:
-                qr_data = obj.data.decode('utf-8')
-                logger.info(f"✓ QR kod okundu: {qr_data}")
-                cap.release()
-                signal_qr_mode_end()
-                # Kameranın tekrar başlaması için kısa bekleme
-                time.sleep(1)
-                return qr_data
+                try:
+                    qr_data = obj.data.decode('utf-8')
+                    logger.info(f"✓ QR kod başarıyla okundu!")
+                    logger.info(f"  İçerik: {qr_data}")
+                    logger.info(f"  Tip: {obj.type}")
+                    logger.info(f"  Konum: {obj.rect}")
+                    logger.info(f"  Frame sayısı: {frame_count}, Süre: {time.time() - start_time:.2f}s")
+                    cap.release()
+                    signal_qr_mode_end()
+                    # Kameranın tekrar başlaması için kısa bekleme
+                    time.sleep(1)
+                    return qr_data
+                except Exception as e:
+                    logger.warning(f"QR kod decode hatası: {e}")
+                    continue
 
-            # Her 50 frame'de bir log
-            if frame_count % 50 == 0:
+            # Her 30 frame'de bir log (daha sık bilgilendirme)
+            if frame_count % 30 == 0:
                 elapsed = time.time() - start_time
-                logger.debug(f"QR aranıyor... ({frame_count} frame, {elapsed:.1f}s)")
+                logger.debug(f"QR aranıyor... ({frame_count} frame işlendi, {elapsed:.1f}s geçti)")
 
-            time.sleep(0.1)  # CPU kullanımını azalt
+            # CPU kullanımını azaltmak için hafif bekleme
+            # Ancak çok fazla beklemiyoruz çünkü QR hızlı geçebilir
+            time.sleep(0.05)
 
+    except KeyboardInterrupt:
+        logger.info("QR okuma kullanıcı tarafından iptal edildi")
+    except Exception as e:
+        logger.error(f"QR okuma sırasında beklenmeyen hata: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     finally:
         cap.release()
         logger.debug("Kamera kapatıldı")
@@ -515,16 +615,33 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
         time.sleep(1)
 
     logger.warning(f"⚠ Timeout: {timeout} saniye içinde QR kod okunamadı")
+    logger.info(f"  Toplam {frame_count} frame işlendi")
     return None
 
 def parse_qr_data(qr_data):
-    """QR kod verisini parse et ve mod/parametreleri döndür"""
+    """
+    QR kod verisini parse et ve mod/parametreleri döndür
+
+    Desteklenen formatlar:
+    1. AP Mode: APMODE5gch36, APMODE2.4gch6
+    2. WiFi QR: WIFI:T:WPA;S:SSID;P:Password;H:false;;
+
+    Returns:
+        tuple: (config_dict, error_message)
+               config_dict: Başarılı ise yapılandırma, değilse None
+               error_message: Hata varsa hata mesajı, yoksa None
+    """
     if not qr_data:
-        return None, None
+        logger.warning("Boş QR data alındı")
+        return None, "QR kod verisi boş"
 
-    logger.debug(f"QR parse ediliyor: {qr_data}")
+    # QR verisini temizle (baştaki/sondaki boşlukları kaldır)
+    qr_data = qr_data.strip()
 
-    # AP Mode: APMODE5gch36 veya APMODE2.4gch6
+    logger.info(f"QR kod parse ediliyor: {qr_data[:100]}...")  # İlk 100 karakter
+
+    # ==================== AP MODE ====================
+    # Format: APMODE5gch36 veya APMODE2.4gch6
     ap_pattern = r'^APMODE(5g|2\.4g)ch(\d+)$'
     ap_match = re.match(ap_pattern, qr_data, re.IGNORECASE)
 
@@ -532,23 +649,29 @@ def parse_qr_data(qr_data):
         band = ap_match.group(1).lower()
         channel = int(ap_match.group(2))
 
-        logger.debug(f"AP Mode tespit edildi: band={band}, channel={channel}")
+        logger.info(f"✓ AP Mode QR kodu tespit edildi")
+        logger.info(f"  Band: {band}")
+        logger.info(f"  Kanal: {channel}")
 
         # Band doğrulama
         if band == "5g":
             hw_mode = "a"
-            valid_channels = [36, 40, 44, 48, 149, 153, 157, 161, 165]
+            valid_channels = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 149, 153, 157, 161, 165]
+            logger.debug(f"5GHz band seçildi, geçerli kanallar: {valid_channels}")
         elif band == "2.4g":
             hw_mode = "g"
-            valid_channels = list(range(1, 12))  # 1-11
+            valid_channels = list(range(1, 15))  # 1-14 (Ülkeye göre değişir)
+            logger.debug(f"2.4GHz band seçildi, geçerli kanallar: {valid_channels}")
         else:
-            logger.error(f"Geçersiz band: {band}")
-            return None, f"Geçersiz band: {band}"
+            error_msg = f"Geçersiz band: {band} (5g veya 2.4g olmalı)"
+            logger.error(error_msg)
+            return None, error_msg
 
         # Kanal doğrulama
         if channel not in valid_channels:
-            logger.error(f"Geçersiz kanal {channel} için {band} band")
-            return None, f"Geçersiz kanal {channel} için {band} band"
+            error_msg = f"Geçersiz kanal: {channel} (Geçerli kanallar: {valid_channels})"
+            logger.error(error_msg)
+            return None, error_msg
 
         config = {
             'mode': 'ap',
@@ -556,25 +679,36 @@ def parse_qr_data(qr_data):
             'hw_mode': hw_mode,
             'channel': channel
         }
-        logger.info(f"AP Mode yapılandırması: {config}")
+        logger.info(f"✓ AP Mode yapılandırması hazır: {config}")
         return config, None
 
-    # STA Mode: WIFI:T:WPA;S:MySSID;P:MyPassword;; veya WIFI:T:nopass;S:MySSID;;
-    # WiFi QR standardını destekleyen esnek parsing
-    if qr_data.startswith('WIFI:') and qr_data.endswith(';;'):
-        logger.debug("WiFi QR kodu tespit edildi, parse ediliyor...")
+    # ==================== STA MODE (WiFi QR) ====================
+    # Format: WIFI:T:WPA;S:MySSID;P:MyPassword;H:false;;
+    # Standart WiFi QR kod formatı
+    if qr_data.upper().startswith('WIFI:'):
+        logger.info("✓ WiFi QR kodu tespit edildi")
+
+        # Son ";;" kontrolü - bazı QR okuyucular farklı encode edebilir
+        if not qr_data.endswith(';;'):
+            # Tek ; ile bitiyorsa kabul et
+            if qr_data.endswith(';'):
+                qr_data += ';'
+            else:
+                qr_data += ';;'
+            logger.debug(f"WiFi QR sonuna ;; eklendi: {qr_data}")
 
         # Kaçış karakterlerini çöz
         def unescape_wifi(s):
             """WiFi QR kaçış karakterlerini çöz"""
-            s = s.replace(r'\;', '\x00')  # Geçici placeholder
-            s = s.replace(r'\:', '\x01')
-            s = s.replace(r'\,', '\x02')
-            s = s.replace(r'\\', '\x03')
+            # Önce \ ile escape edilmiş karakterleri geçici placeholder'a çevir
+            s = s.replace(r'\;', '\x00')  # Escaped semicolon
+            s = s.replace(r'\:', '\x01')  # Escaped colon
+            s = s.replace(r'\,', '\x02')  # Escaped comma
+            s = s.replace(r'\\', '\x03')  # Escaped backslash
             return s
 
         def restore_wifi(s):
-            """Placeholder'ları geri yükle"""
+            """Placeholder'ları gerçek karakterlere geri yükle"""
             s = s.replace('\x00', ';')
             s = s.replace('\x01', ':')
             s = s.replace('\x02', ',')
@@ -585,7 +719,13 @@ def parse_qr_data(qr_data):
         params = {}
         try:
             # WIFI: prefix ve ;; suffix'i kaldır
-            content = qr_data[5:-2]  # "WIFI:" ve ";;" çıkar
+            content = qr_data[5:]  # "WIFI:" çıkar
+            if content.endswith(';;'):
+                content = content[:-2]  # ";;" çıkar
+            elif content.endswith(';'):
+                content = content[:-1]  # ";" çıkar
+
+            logger.debug(f"WiFi QR içeriği: {content}")
 
             # Kaçış karakterlerini geçici olarak değiştir
             content_escaped = unescape_wifi(content)
@@ -593,29 +733,64 @@ def parse_qr_data(qr_data):
             # Parametreleri ayır (kaçışsız ; ile)
             parts = content_escaped.split(';')
 
+            logger.debug(f"WiFi QR parçaları: {parts}")
+
             for part in parts:
+                if not part.strip():  # Boş parçaları atla
+                    continue
+
                 if ':' in part:
                     key, value = part.split(':', 1)
                     # Kaçış karakterlerini geri yükle
-                    params[key.strip()] = restore_wifi(value.strip())
+                    key = key.strip()
+                    value = restore_wifi(value.strip())
+                    params[key] = value
+                    logger.debug(f"  {key} = {value}")
 
-            logger.debug(f"Parse edilen parametreler: {params}")
+            logger.debug(f"Parse edilen WiFi parametreleri: {list(params.keys())}")
 
             # Zorunlu parametreleri kontrol et
-            if 'T' not in params or 'S' not in params:
-                logger.error("WIFI QR eksik parametreler (T veya S yok)")
-                return None, "WiFi QR kodu eksik parametreler içeriyor"
+            if 'T' not in params:
+                error_msg = "WiFi QR eksik parametre: T (güvenlik tipi) bulunamadı"
+                logger.error(error_msg)
+                return None, error_msg
+
+            if 'S' not in params:
+                error_msg = "WiFi QR eksik parametre: S (SSID) bulunamadı"
+                logger.error(error_msg)
+                return None, error_msg
 
             security = params['T'].upper()
             ssid = params['S']
             password = params.get('P', '')  # Şifre opsiyonel (açık ağlar için)
             hidden = params.get('H', 'false').lower() == 'true'
 
-            # nopass durumunda şifre boş olmalı
-            if security.upper() == 'NOPASS':
-                password = ''
+            # SSID boş olamaz
+            if not ssid:
+                error_msg = "SSID boş olamaz"
+                logger.error(error_msg)
+                return None, error_msg
 
-            logger.debug(f"STA Mode tespit edildi: SSID={ssid}, Security={security}, Hidden={hidden}")
+            # Güvenlik tipi kontrolü
+            valid_security_types = ['WPA', 'WPA2', 'WEP', 'NOPASS', 'WPA3']
+            if security not in valid_security_types:
+                logger.warning(f"Standart dışı güvenlik tipi: {security} (WPA olarak kabul ediliyor)")
+                # WPA olarak kabul et
+                if security not in ['NOPASS', 'nopass']:
+                    security = 'WPA'
+
+            # nopass durumunda şifre boş olmalı
+            if security == 'NOPASS':
+                password = ''
+                logger.debug("Açık ağ (şifresiz) tespit edildi")
+            elif not password and security != 'NOPASS':
+                logger.warning(f"Şifreli ağ ({security}) için şifre belirtilmemiş")
+
+            logger.info(f"✓ WiFi yapılandırması:")
+            logger.info(f"  SSID: {ssid}")
+            logger.info(f"  Güvenlik: {security}")
+            logger.info(f"  Şifre: {'***' if password else '(yok)'}")
+            logger.info(f"  Gizli: {hidden}")
 
             config = {
                 'mode': 'sta',
@@ -624,16 +799,21 @@ def parse_qr_data(qr_data):
                 'security': security,
                 'hidden': hidden
             }
-            logger.info(f"STA Mode yapılandırması: SSID={ssid}, Security={security}, Hidden={hidden}")
             return config, None
 
         except Exception as e:
-            logger.error(f"WiFi QR parse hatası: {e}")
+            error_msg = f"WiFi QR parse hatası: {e}"
+            logger.error(error_msg)
             logger.error(f"QR içeriği: {qr_data}")
-            return None, f"WiFi QR parse hatası: {e}"
+            import traceback
+            logger.debug(traceback.format_exc())
+            return None, error_msg
 
-    logger.error(f"Tanınmayan QR format: {qr_data}")
-    return None, f"Tanınmayan QR format: {qr_data}"
+    # ==================== BİLİNMEYEN FORMAT ====================
+    error_msg = f"Tanınmayan QR formatı. Beklenen: 'APMODE...' veya 'WIFI:...'"
+    logger.error(error_msg)
+    logger.error(f"QR içeriği: {qr_data[:200]}")  # İlk 200 karakter
+    return None, error_msg
 
 # ==================== WiFi YAPILANDIRMA ====================
 def configure_ap_mode(band, hw_mode, channel):
@@ -977,7 +1157,8 @@ def open_chip(path):
     """GPIO chip'i aç"""
     try:
         return gpiod.Chip(path, gpiod.Chip.OPEN_BY_PATH)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"OPEN_BY_PATH hatası, standart yöntem deneniyor: {e}")
         return gpiod.Chip(path)
 
 def request_input(chip, offset):
