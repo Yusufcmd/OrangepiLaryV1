@@ -18,7 +18,7 @@ SQLAlchemy==2.0.34
 # ==================== Computer Vision ====================
 numpy==1.26.4
 opencv-python==4.10.0.84
-pyzbar==0.1.9  # QR kod okuma için
+pyzbar==0.1.9
 
 # ==================== Utilities ====================
 blinker==1.7.0
