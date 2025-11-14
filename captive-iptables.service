@@ -1,0 +1,19 @@
+[Unit]
+Description=Captive Portal iptables Rules
+After=network.target wlan0-static.service
+Wants=wlan0-static.service
+Before=captive-portal-spoof.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/lscope/bin/captive_portal_iptables.sh
+ExecStop=/usr/sbin/iptables -t nat -D PREROUTING -i wlan0 -j CAPTIVE_PORTAL
+ExecStop=/usr/sbin/iptables -t nat -F CAPTIVE_PORTAL
+ExecStop=/usr/sbin/iptables -t nat -X CAPTIVE_PORTAL
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,22 @@
+[Unit]
+Description=Captive Portal Fake Internet Server
+After=network.target wlan0-static.service
+Wants=wlan0-static.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/lscope
+ExecStart=/usr/bin/python3 /opt/lscope/fake_internet_server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=false
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+
