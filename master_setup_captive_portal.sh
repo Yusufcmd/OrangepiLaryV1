@@ -73,7 +73,8 @@ check_root() {
 }
 
 check_hostname() {
-    local current_hostname=$(hostname)
+    local current_hostname
+    current_hostname=$(hostname)
     print_step "Orange Pi hostname kontrol ediliyor..."
     print_step "Mevcut hostname: $current_hostname"
 
@@ -303,22 +304,41 @@ create_dns_config_script() {
 
     cat > "$BIN_DIR/captive_portal_dns_config.sh" <<'EOF'
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 DNSMASQ_CONF="/etc/dnsmasq.d/captive-portal.conf"
 LOG="/var/log/captive_portal_setup.log"
 
 echo "[$(date '+%F %T')] Captive Portal DNS yapılandırması başlıyor..." | tee -a "$LOG"
 
-# Yerel IP adresini al (wlan0 için)
-LOCAL_IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+# Yerel IP adresini al - önce wlan0, sonra diğer interface'ler
+LOCAL_IP=""
+for IFACE in wlan0 wlan1 ap0 eth0; do
+    LOCAL_IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || true)
+    if [ -n "$LOCAL_IP" ]; then
+        echo "[INFO] IP adresi bulundu: $LOCAL_IP ($IFACE)" | tee -a "$LOG"
+        break
+    fi
+done
 
+# Eğer hiçbir interface'de IP yoksa, varsayılan AP IP'si kullan
 if [ -z "$LOCAL_IP" ]; then
-    echo "[ERROR] wlan0 interface'inde IP adresi bulunamadı!" | tee -a "$LOG"
-    exit 1
+    echo "[WARNING] Hiçbir interface'de IP bulunamadı, varsayılan 192.168.4.1 kullanılıyor" | tee -a "$LOG"
+    LOCAL_IP="192.168.4.1"
 fi
 
-echo "[INFO] Local IP: $LOCAL_IP" | tee -a "$LOG"
+echo "[INFO] Kullanılan Local IP: $LOCAL_IP" | tee -a "$LOG"
+
+# dnsmasq'ın çalışıp çalışmadığını kontrol et
+if systemctl is-active --quiet dnsmasq; then
+    echo "[INFO] dnsmasq şu anda çalışıyor" | tee -a "$LOG"
+else
+    echo "[WARNING] dnsmasq çalışmıyor, kurulu mu kontrol ediliyor..." | tee -a "$LOG"
+    if ! command -v dnsmasq &> /dev/null; then
+        echo "[ERROR] dnsmasq kurulu değil! Lütfen kurun: apt install dnsmasq" | tee -a "$LOG"
+        exit 1
+    fi
+fi
 
 # dnsmasq captive portal konfigürasyonu oluştur
 cat > "$DNSMASQ_CONF" <<EOFCONF
@@ -366,7 +386,27 @@ local=/local/
 EOFCONF
 
 echo "[$(date '+%F %T')] dnsmasq konfigürasyonu oluşturuldu: $DNSMASQ_CONF" | tee -a "$LOG"
-systemctl restart dnsmasq || { echo "[ERROR] dnsmasq restart başarısız!" | tee -a "$LOG"; exit 1; }
+
+# dnsmasq konfigürasyonunu test et
+if dnsmasq --test 2>&1 | grep -q "syntax check OK"; then
+    echo "[INFO] dnsmasq konfigürasyonu geçerli" | tee -a "$LOG"
+else
+    echo "[WARNING] dnsmasq konfigürasyon testi başarısız, yine de devam ediliyor" | tee -a "$LOG"
+fi
+
+# dnsmasq'ı restart et - başarısız olursa uyar ama devam et
+if systemctl restart dnsmasq 2>&1 | tee -a "$LOG"; then
+    echo "[SUCCESS] dnsmasq başarıyla yeniden başlatıldı" | tee -a "$LOG"
+else
+    echo "[ERROR] dnsmasq restart başarısız!" | tee -a "$LOG"
+    echo "[INFO] dnsmasq durumu:" | tee -a "$LOG"
+    systemctl status dnsmasq --no-pager 2>&1 | tee -a "$LOG" || true
+    echo "[INFO] Port 53 kullanımı:" | tee -a "$LOG"
+    netstat -tulpn | grep :53 2>&1 | tee -a "$LOG" || ss -tulpn | grep :53 2>&1 | tee -a "$LOG" || true
+    echo "[WARNING] DNS yapılandırması oluşturuldu ama servis başlatılamadı!" | tee -a "$LOG"
+    echo "[INFO] AP moduna geçince otomatik çalışacak" | tee -a "$LOG"
+fi
+
 echo "[$(date '+%F %T')] Captive Portal DNS yapılandırması tamamlandı!" | tee -a "$LOG"
 EOF
 
