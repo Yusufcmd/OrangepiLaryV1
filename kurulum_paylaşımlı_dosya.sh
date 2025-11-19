@@ -17,8 +17,8 @@ NC='\033[0m' # No Color
 # Çalışma dizini
 CLARY_DIR="/home/rise/clary"
 VENV_DIR="$CLARY_DIR/venv"
-SERVICE_FILE="recovery-monitor.service"
-SERVICE_NAME="recovery-monitor.service"
+SERVICE_FILE="/etc/systemd/system/recovery-monitor.service"
+SERVICE_NAME="/etc/systemd/system/recovery-monitor.service"
 
 # Root kontrolü
 if [ "$EUID" -ne 0 ]; then
