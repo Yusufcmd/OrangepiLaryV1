@@ -213,6 +213,7 @@ active_connections = set()
 shared_camera_frame = None
 shared_frame_lock = threading.Lock()
 shared_frame_timestamp = 0
+shared_frame_file = "/tmp/clary_camera_frame.npy"  # Paylaşımlı dosya yolu
 
 # QR modu sinyal dosyası
 CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
@@ -1006,10 +1007,9 @@ def generate_frames():
                 # Her 3 karede bir yaz (performans için)
                 if frame_count % 3 == 0:
                     try:
-                        import numpy as np
                         np.save(shared_frame_file, frame)
-                    except Exception:
-                        pass  # Sessizce devam et
+                    except Exception as save_err:
+                        logger.debug(f"Paylaşımlı kare kaydetme hatası: {save_err}")
 
             ever_connected = True; error_count = 0
             last_ok = frame.copy(); last_ts = now
