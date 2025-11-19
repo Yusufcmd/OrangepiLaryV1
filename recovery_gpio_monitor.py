@@ -31,7 +31,7 @@ except ImportError as e:
     cv2 = None
 
 # Kamera kontrol sinyali için dosya yolu
-CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
+CAMERA_SIGNAL_FILE = "/home/rise/clary/clary_qr_mode.signal"
 CAMERA_RELEASE_TIMEOUT = 10  # Kameranın serbest kalması için max bekleme süresi (saniye) - arttırıldı
 
 # ==================== LOGLAMA YAPILANDIRMA ====================
@@ -455,7 +455,7 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
     signal_qr_mode_start()
 
     # Paylaşımlı kare dosyası
-    shared_frame_file = "/tmp/clary_camera_frame.npy"
+    shared_frame_file = "/home/rise/clary/clary_camera_frame.npy"
 
     logger.info(f"✓ Paylaşımlı dosyadan QR kod bekleniyor... (Timeout: {timeout}s)")
     logger.info(f"   Kare dosyası: {shared_frame_file}")

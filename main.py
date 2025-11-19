@@ -93,7 +93,7 @@ def inject_csrf():
 
 # ================================ Loglama =================================
 log_dir = os.path.join(BASE_DIR, "logs")
-fallback_dir = "/tmp/clary_logs"
+fallback_dir = "/home/rise/clary/clary_logs"
 os.makedirs(log_dir, exist_ok=True)
 
 def _make_handler(path):
@@ -213,7 +213,7 @@ active_connections = set()
 shared_camera_frame = None
 shared_frame_lock = threading.Lock()
 shared_frame_timestamp = 0
-shared_frame_file = "/tmp/clary_camera_frame.npy"  # Paylaşımlı dosya yolu
+shared_frame_file = "/home/rise/clary/clary_camera_frame.npy"  # Paylaşımlı dosya yolu
 
 # QR modu sinyal dosyası
 CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
