@@ -13,7 +13,6 @@ import time
 import signal
 import subprocess
 import threading
-import re
 import logging
 from logging.handlers import RotatingFileHandler
 from typing import Optional
@@ -31,7 +30,7 @@ except ImportError as e:
     cv2 = None
 
 # Kamera kontrol sinyali için dosya yolu
-CAMERA_SIGNAL_FILE = "/home/rise/clary/clary_qr_mode.signal"
+CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
 CAMERA_RELEASE_TIMEOUT = 10  # Kameranın serbest kalması için max bekleme süresi (saniye) - arttırıldı
 
 # ==================== LOGLAMA YAPILANDIRMA ====================
@@ -442,440 +441,9 @@ def is_duty_in_range(duty, target, tolerance=PWM_TOLERANCE):
     return (target - tolerance) <= duty <= (target + tolerance)
 
 # ==================== QR KOD OKUMA ====================
-def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
-    """
-    Main.py'den paylaşımlı dosya üzerinden kamera karelerini kullanarak QR kod oku.
-    Main.py import etmeden, sadece /tmp/clary_camera_frame.npy dosyasını okur.
-    """
-    if cv2 is None:
-        logger.error("HATA: OpenCV yüklü değil!")
-        return None
-
-    # QR modu başladığını bildir
-    signal_qr_mode_start()
-
-    # Paylaşımlı kare dosyası
-    shared_frame_file = "/home/rise/clary/clary_camera_frame.npy"
-
-    logger.info(f"✓ Paylaşımlı dosyadan QR kod bekleniyor... (Timeout: {timeout}s)")
-    logger.info(f"   Kare dosyası: {shared_frame_file}")
-
-    start_time = time.time()
-    qr_data = None
-
-    # OpenCV QRCodeDetector oluştur
-    qr_detector = cv2.QRCodeDetector()
-
-    frame_count = 0
-    last_frame_time = 0
-    no_frame_count = 0
-    max_no_frame_warnings = 3
-
-    try:
-        import numpy as np
-
-        while (time.time() - start_time) < timeout:
-            frame = None
-            frame_timestamp = 0
-
-            # Paylaşımlı dosyadan kareyi oku
-            try:
-                if os.path.exists(shared_frame_file):
-                    frame = np.load(shared_frame_file)
-                    frame_timestamp = os.path.getmtime(shared_frame_file)
-                    no_frame_count = 0  # Reset counter
-                else:
-                    no_frame_count += 1
-                    if no_frame_count <= max_no_frame_warnings:
-                        logger.warning(f"Paylaşımlı kare dosyası henüz yok: {shared_frame_file}")
-                        logger.info("   → main.py çalışıyor mu? Kamera aktif mi?")
-            except Exception as e:
-                no_frame_count += 1
-                if no_frame_count <= max_no_frame_warnings:
-                    logger.warning(f"Paylaşımlı kare okuma hatası: {e}")
-
-            if frame is None:
-                time.sleep(0.2)
-                continue
-
-            # Aynı kareyi tekrar işleme (timestamp kontrolü)
-            if frame_timestamp == last_frame_time:
-                time.sleep(0.05)
-                continue
-
-            last_frame_time = frame_timestamp
-            frame_count += 1
-
-            # OpenCV QRCodeDetector ile QR kod tespit et ve çöz
-            data, bbox, straight_qrcode = qr_detector.detectAndDecode(frame)
-
-            if data:
-                qr_data = data
-                logger.info(f"✓ QR kod okundu: {qr_data[:50]}... ({frame_count} kare işlendi)")
-                break
-
-            # Her 30 karede bir ilerleme göster
-            if frame_count % 30 == 0:
-                elapsed = time.time() - start_time
-                logger.info(f"  QR aranıyor... {frame_count} kare işlendi ({elapsed:.1f}s)")
-
-            time.sleep(0.05)  # CPU kullanımını azalt
-
-    except ImportError:
-        logger.error("HATA: NumPy yüklü değil! 'pip install numpy' çalıştırın")
-        signal_qr_mode_end()
-        return None
-    except KeyboardInterrupt:
-        logger.info("QR okuma kullanıcı tarafından iptal edildi")
-    except Exception as e:
-        logger.error(f"QR okuma hatası: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
-    finally:
-        # QR modu bittiğini bildir
-        signal_qr_mode_end()
-
-        elapsed = time.time() - start_time
-        if qr_data:
-            logger.info(f"✓ QR okuma başarılı: {elapsed:.1f}s, {frame_count} kare")
-        else:
-            logger.warning(f"⚠ QR okunamadı: {elapsed:.1f}s, {frame_count} kare işlendi")
-            if frame_count == 0:
-                logger.error("   HATA: Hiç kare alınamadı! main.py çalışmıyor olabilir.")
-
-    return qr_data
-
-def parse_qr_data(qr_data):
-    """QR kod verisini parse et ve mod/parametreleri döndür"""
-    if not qr_data:
-        return None, None
-
-    logger.debug(f"QR parse ediliyor: {qr_data}")
-
-    # AP Mode: APMODE5gch36 veya APMODE2.4gch6
-    ap_pattern = r'^APMODE(5g|2\.4g)ch(\d+)$'
-    ap_match = re.match(ap_pattern, qr_data, re.IGNORECASE)
-
-    if ap_match:
-        band = ap_match.group(1).lower()
-        channel = int(ap_match.group(2))
-
-        logger.debug(f"AP Mode tespit edildi: band={band}, channel={channel}")
-
-        # Band doğrulama
-        if band == "5g":
-            hw_mode = "a"
-            valid_channels = [36, 40, 44, 48, 149, 153, 157, 161, 165]
-        elif band == "2.4g":
-            hw_mode = "g"
-            valid_channels = list(range(1, 12))  # 1-11
-        else:
-            logger.error(f"Geçersiz band: {band}")
-            return None, f"Geçersiz band: {band}"
-
-        # Kanal doğrulama
-        if channel not in valid_channels:
-            logger.error(f"Geçersiz kanal {channel} için {band} band")
-            return None, f"Geçersiz kanal {channel} için {band} band"
-
-        config = {
-            'mode': 'ap',
-            'band': band,
-            'hw_mode': hw_mode,
-            'channel': channel
-        }
-        logger.info(f"AP Mode yapılandırması: {config}")
-        return config, None
-
-    # STA Mode: WIFI:T:WPA;S:MySSID;P:MyPassword;; veya WIFI:T:nopass;S:MySSID;;
-    # WiFi QR standardını destekleyen esnek parsing
-    if qr_data.startswith('WIFI:') and qr_data.endswith(';;'):
-        logger.debug("WiFi QR kodu tespit edildi, parse ediliyor...")
-
-        # Kaçış karakterlerini çöz
-        def unescape_wifi(s):
-            """WiFi QR kaçış karakterlerini çöz"""
-            s = s.replace(r'\;', '\x00')  # Geçici placeholder
-            s = s.replace(r'\:', '\x01')
-            s = s.replace(r'\,', '\x02')
-            s = s.replace(r'\\', '\x03')
-            return s
-
-        def restore_wifi(s):
-            """Placeholder'ları geri yükle"""
-            s = s.replace('\x00', ';')
-            s = s.replace('\x01', ':')
-            s = s.replace('\x02', ',')
-            s = s.replace('\x03', '\\')
-            return s
-
-        # Parametreleri parse et
-        params = {}
-        try:
-            # WIFI: prefix ve ;; suffix'i kaldır
-            content = qr_data[5:-2]  # "WIFI:" ve ";;" çıkar
-
-            # Kaçış karakterlerini geçici olarak değiştir
-            content_escaped = unescape_wifi(content)
-
-            # Parametreleri ayır (kaçışsız ; ile)
-            parts = content_escaped.split(';')
-
-            for part in parts:
-                if ':' in part:
-                    key, value = part.split(':', 1)
-                    # Kaçış karakterlerini geri yükle
-                    params[key.strip()] = restore_wifi(value.strip())
-
-            logger.debug(f"Parse edilen parametreler: {params}")
-
-            # Zorunlu parametreleri kontrol et
-            if 'T' not in params or 'S' not in params:
-                logger.error("WIFI QR eksik parametreler (T veya S yok)")
-                return None, "WiFi QR kodu eksik parametreler içeriyor"
-
-            security = params['T'].upper()
-            ssid = params['S']
-            password = params.get('P', '')  # Şifre opsiyonel (açık ağlar için)
-            hidden = params.get('H', 'false').lower() == 'true'
-
-            # nopass durumunda şifre boş olmalı
-            if security.upper() == 'NOPASS':
-                password = ''
-
-            logger.debug(f"STA Mode tespit edildi: SSID={ssid}, Security={security}, Hidden={hidden}")
-
-            config = {
-                'mode': 'sta',
-                'ssid': ssid,
-                'password': password,
-                'security': security,
-                'hidden': hidden
-            }
-            logger.info(f"STA Mode yapılandırması: SSID={ssid}, Security={security}, Hidden={hidden}")
-            return config, None
-
-        except Exception as e:
-            logger.error(f"WiFi QR parse hatası: {e}")
-            logger.error(f"QR içeriği: {qr_data}")
-            return None, f"WiFi QR parse hatası: {e}"
-
-    logger.error(f"Tanınmayan QR format: {qr_data}")
-    return None, f"Tanınmayan QR format: {qr_data}"
-
-# ==================== WiFi YAPILANDIRMA ====================
-def configure_ap_mode(band, hw_mode, channel):
-    """AP modunu yapılandır"""
-    logger.info("="*60)
-    logger.info("AP MODE YAPILANDIRMA")
-    logger.info(f"  Band: {band}")
-    logger.info(f"  HW Mode: {hw_mode}")
-    logger.info(f"  Channel: {channel}")
-    logger.info("="*60)
-
-    # hostapd.conf dosyasını güncelle
-    hostapd_conf = "/etc/hostapd/hostapd.conf"
-
-    if not os.path.exists(hostapd_conf):
-        logger.error(f"HATA: {hostapd_conf} bulunamadı!")
-        return False
-
-    try:
-        # Mevcut yapılandırmayı oku
-        logger.debug(f"{hostapd_conf} okunuyor...")
-        with open(hostapd_conf, 'r') as f:
-            config_lines = f.readlines()
-
-        # hw_mode ve channel parametrelerini güncelle
-        updated_lines = []
-        hw_mode_updated = False
-        channel_updated = False
-
-        for line in config_lines:
-            if line.strip().startswith('hw_mode='):
-                updated_lines.append(f'hw_mode={hw_mode}\n')
-                hw_mode_updated = True
-                logger.debug(f"hw_mode güncellendi: {hw_mode}")
-            elif line.strip().startswith('channel='):
-                updated_lines.append(f'channel={channel}\n')
-                channel_updated = True
-                logger.debug(f"channel güncellendi: {channel}")
-            else:
-                updated_lines.append(line)
-
-        # Eğer parametreler yoksa ekle
-        if not hw_mode_updated:
-            updated_lines.append(f'hw_mode={hw_mode}\n')
-            logger.debug(f"hw_mode eklendi: {hw_mode}")
-        if not channel_updated:
-            updated_lines.append(f'channel={channel}\n')
-            logger.debug(f"channel eklendi: {channel}")
-
-        # Geçici dosyaya yaz
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf') as tmp:
-            tmp.writelines(updated_lines)
-            tmp_path = tmp.name
-
-        logger.debug(f"Geçici dosya oluşturuldu: {tmp_path}")
-
-        # sudo ile kopyala
-        logger.debug(f"hostapd.conf güncelleniyor...")
-        result = subprocess.run(['sudo', 'cp', tmp_path, hostapd_conf],
-                              capture_output=True, text=True)
-        os.unlink(tmp_path)
-
-        if result.returncode != 0:
-            logger.error(f"hostapd.conf kopyalama hatası: {result.stderr}")
-            return False
-
-        logger.info(f"✓ {hostapd_conf} güncellendi")
-
-        # AP mode script'i çalıştır
-        if os.path.exists(AP_MODE_SCRIPT):
-            logger.info(f"AP mode script çalıştırılıyor: {AP_MODE_SCRIPT}")
-            result = subprocess.run(['sudo', AP_MODE_SCRIPT],
-                                  capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                logger.info("✓ AP modu başarıyla başlatıldı")
-                if result.stdout:
-                    logger.debug(f"Script çıktısı:\n{result.stdout}")
-                return True
-            else:
-                logger.error(f"HATA: AP mode script başarısız: {result.stderr}")
-                return False
-        else:
-            # Manuel hostapd restart
-            logger.warning("AP mode script bulunamadı, manuel restart yapılıyor...")
-            result = subprocess.run(['sudo', 'systemctl', 'restart', 'hostapd'],
-                                  capture_output=True, text=True)
-            if result.returncode == 0:
-                logger.info("✓ hostapd yeniden başlatıldı")
-                return True
-            else:
-                logger.error(f"hostapd restart hatası: {result.stderr}")
-                return False
-
-    except Exception as e:
-        logger.error(f"HATA: AP mode yapılandırma hatası: {e}", exc_info=True)
-        return False
-
-def configure_sta_mode(ssid, password):
-    """STA modunu yapılandır"""
-    logger.info("="*60)
-    logger.info("STA MODE YAPILANDIRMA")
-    logger.info(f"  SSID: {ssid}")
-    logger.info(f"  Password: {'*' * len(password)}")
-    logger.info("="*60)
-
-    try:
-        # STA mode script'i çalıştır
-        if os.path.exists(STA_MODE_SCRIPT):
-            logger.info(f"STA mode script çalıştırılıyor: {STA_MODE_SCRIPT}")
-            # Script içinde SSID ve PSK parametreleri güncellenmeli
-            # Önce script'i yeniden oluştur
-            script_content = f"""#!/usr/bin/env bash
-set -euo pipefail
-LOG=/var/log/wifi_mode.log
-SSID='{ssid}'
-PSK='{password}'
-
-echo "[sta_mode] $(date '+%F %T')" | tee -a "$LOG"
-systemctl disable --now hostapd dnsmasq wlan0-static.service || true
-ip addr flush dev wlan0 || true
-
-mkdir -p /etc/NetworkManager/conf.d
-if [ -f /etc/NetworkManager/conf.d/unmanaged.conf ]; then
-  sed -i '/unmanaged-devices/d' /etc/NetworkManager/conf.d/unmanaged.conf || true
-  [ -s /etc/NetworkManager/conf.d/unmanaged.conf ] || rm -f /etc/NetworkManager/conf.d/unmanaged.conf
-fi
-
-systemctl enable --now NetworkManager || true
-rfkill unblock wifi || true
-nmcli radio wifi on || true
-
-# ÖNEMLİ: Hedef SSID dışındaki TÜM Wi-Fi bağlantılarını SİL (sadece güncel ağ kalsın)
-echo "Deleting all other WiFi connections (keeping only target SSID)..." | tee -a "$LOG"
-nmcli -t -f NAME,TYPE con show | grep ':802-11-wireless$' | cut -d: -f1 | while IFS= read -r conn_name; do
-  if [ "$conn_name" != "$SSID" ]; then
-    echo "  Deleting connection: $conn_name" | tee -a "$LOG"
-    nmcli con delete "$conn_name" 2>&1 | tee -a "$LOG" || true
-  fi
-done
-
-# Bağlantıyı oluştur/güncelle (autoconnect her zaman yes)
-if nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
-  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto || true
-else
-  nmcli con add type wifi ifname wlan0 con-name "$SSID" ssid "$SSID"
-  nmcli con modify "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PSK" connection.autoconnect yes ipv4.method auto
-fi
-
-nmcli dev wifi rescan || true
-nmcli con up "$SSID" || nmcli dev wifi connect "$SSID" password "$PSK"
-
-systemctl restart NetworkManager || true
-
-echo "[sta_mode OK] $(date '+%F %T')" | tee -a "$LOG"
-"""
-            # Geçici dosyaya yaz ve çalıştır
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as tmp:
-                tmp.write(script_content)
-                tmp_path = tmp.name
-
-            logger.debug(f"Geçici script oluşturuldu: {tmp_path}")
-            os.chmod(tmp_path, 0o755)
-
-            logger.debug("STA mode script çalıştırılıyor...")
-            result = subprocess.run(['sudo', 'bash', tmp_path],
-                                  capture_output=True, text=True, timeout=60)
-            os.unlink(tmp_path)
-
-            if result.returncode == 0:
-                logger.info("✓ STA modu başarıyla yapılandırıldı")
-                if result.stdout:
-                    logger.debug(f"Script çıktısı:\n{result.stdout}")
-                return True
-            else:
-                logger.error(f"HATA: STA mode yapılandırma başarısız: {result.stderr}")
-                return False
-        else:
-            # NetworkManager ile doğrudan bağlan
-            logger.warning("STA mode script bulunamadı, NetworkManager kullanılıyor...")
-
-            # Hostapd'yi durdur
-            logger.debug("hostapd durduruluyor...")
-            subprocess.run(['sudo', 'systemctl', 'stop', 'hostapd'],
-                         capture_output=True, check=False)
-
-            # NetworkManager'ı başlat
-            logger.debug("NetworkManager başlatılıyor...")
-            subprocess.run(['sudo', 'systemctl', 'start', 'NetworkManager'],
-                         capture_output=True, check=True)
-
-            # WiFi bağlantısı oluştur veya güncelle
-            logger.debug(f"WiFi bağlantısı kontrol ediliyor: {ssid}")
-            result = subprocess.run(['nmcli', 'con', 'show', ssid],
-                                  capture_output=True, text=True)
-
-            if result.returncode == 0:
-                # Mevcut bağlantıyı güncelle
-                logger.debug(f"Mevcut bağlantı güncelleniyor: {ssid}")
-                subprocess.run(['sudo', 'nmcli', 'con', 'modify', ssid,
-                              'wifi-sec.psk', password], check=True)
-            else:
-                # Yeni bağlantı oluştur
-                logger.debug(f"Yeni bağlantı oluşturuluyor: {ssid}")
-                subprocess.run(['sudo', 'nmcli', 'dev', 'wifi', 'connect', ssid,
-                              'password', password], check=True)
-
-            logger.info("✓ STA modu başarıyla yapılandırıldı")
-            return True
-
-    except Exception as e:
-        logger.error(f"HATA: STA mode yapılandırma hatası: {e}", exc_info=True)
-        return False
+# NOT: QR okuma fonksiyonları artık kullanılmıyor!
+# Tüm QR okuma ve WiFi yapılandırma işlemleri main.py içinde yapılıyor.
+# recovery_gpio_monitor.py sadece %25 PWM algılayıp main.py'ye sinyal gönderiyor.
 
 # ==================== RECOVERY MODU ====================
 def trigger_recovery():
@@ -948,7 +516,7 @@ def trigger_recovery():
 
 # ==================== QR OKUMA MODU ====================
 def trigger_qr_mode():
-    """QR okuma modunu tetikle"""
+    """QR okuma modunu tetikle - sadece main.py'ye sinyal gönder"""
     logger.info("="*60)
     logger.info("QR OKUMA MODU TETIKLENDI")
     logger.info("="*60)
@@ -956,47 +524,19 @@ def trigger_qr_mode():
     start_led_blink()
 
     try:
-        # QR kod oku
-        qr_data = read_qr_code_from_camera(timeout=QR_READ_TIMEOUT)
+        # main.py'ye QR modu sinyali gönder
+        signal_qr_mode_start()
 
-        if not qr_data:
-            logger.error("HATA: QR kod okunamadı")
-            stop_led_blink()
-            return False
+        logger.info("✓ QR modu sinyali gönderildi, main.py işlemi devralacak")
+        logger.info("  main.py kamera görüntüsünü analiz edip QR kodu okuyacak")
 
-        # QR verisini parse et
-        config, error = parse_qr_data(qr_data)
+        # Sinyal 60 saniye boyunca aktif kalacak (main.py işlemi tamamlayana kadar)
+        # main.py işini bitirince sinyali temizleyecek
 
-        if error:
-            logger.error(f"HATA: QR parse hatası: {error}")
-            stop_led_blink()
-            return False
-
-        if not config:
-            logger.error("HATA: Geçersiz QR verisi")
-            stop_led_blink()
-            return False
-
-        # Moda göre yapılandır
-        success = False
-        if config['mode'] == 'ap':
-            logger.info(f"AP Mode yapılandırması başlatılıyor: {config['band']} band, kanal {config['channel']}")
-            success = configure_ap_mode(config['band'], config['hw_mode'], config['channel'])
-        elif config['mode'] == 'sta':
-            logger.info(f"STA Mode yapılandırması başlatılıyor: SSID={config['ssid']}")
-            success = configure_sta_mode(config['ssid'], config['password'])
-
-        stop_led_blink()
-
-        if success:
-            logger.info(f"✓ WiFi yapılandırması başarılı ({config['mode'].upper()} mode)")
-        else:
-            logger.error(f"✗ WiFi yapılandırması başarısız")
-
-        return success
+        return True
 
     except Exception as e:
-        logger.error(f"HATA: QR okuma modu hatası: {e}", exc_info=True)
+        logger.error(f"HATA: QR okuma modu sinyal hatası: {e}", exc_info=True)
         stop_led_blink()
         return False
 

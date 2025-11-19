@@ -245,10 +245,314 @@ def qr_signal_monitor_loop():
     while not _qr_monitor_stop_evt.is_set():
         try:
             check_qr_mode_signal()
+
+            # QR modu aktifse ve henüz işlem başlatılmamışsa
+            if qr_mode_active and not getattr(qr_signal_monitor_loop, '_qr_processing', False):
+                qr_signal_monitor_loop._qr_processing = True
+                # QR okuma işlemini başlat
+                threading.Thread(target=process_qr_scan, daemon=True).start()
+
         except Exception as e:
             logger.error(f"QR sinyal monitör hatası: {e}")
         time.sleep(0.05)  # 50ms aralıklarla kontrol et (daha hızlı tepki)
     logger.info("QR sinyal monitörü durdu")
+
+def process_qr_scan():
+    """QR kod tarama işlemini yürütür"""
+    global qr_mode_active
+    logger.info("="*60)
+    logger.info("QR TARAMA İŞLEMİ BAŞLATILDI (main.py)")
+    logger.info("="*60)
+
+    try:
+        # Kamera görüntüsünden QR kod oku (60 saniye timeout)
+        qr_data = read_qr_from_camera_frames(timeout=60)
+
+        if not qr_data:
+            logger.error("✗ QR kod okunamadı - timeout")
+            return
+
+        logger.info(f"✓ QR kod okundu: {qr_data[:100]}...")
+
+        # QR verisini parse et
+        config, error = parse_qr_data(qr_data)
+
+        if error:
+            logger.error(f"✗ QR parse hatası: {error}")
+            return
+
+        if not config:
+            logger.error("✗ Geçersiz QR verisi")
+            return
+
+        # WiFi yapılandırmasını uygula
+        success = apply_wifi_config(config)
+
+        if success:
+            logger.info(f"✓ WiFi yapılandırması başarılı ({config['mode'].upper()} mode)")
+        else:
+            logger.error(f"✗ WiFi yapılandırması başarısız")
+
+    except Exception as e:
+        logger.error(f"QR tarama işlemi hatası: {e}", exc_info=True)
+    finally:
+        # QR modunu kapat
+        try:
+            if os.path.exists(CAMERA_SIGNAL_FILE):
+                os.remove(CAMERA_SIGNAL_FILE)
+                logger.info("QR modu sinyali temizlendi")
+        except Exception as e:
+            logger.error(f"Sinyal dosyası temizleme hatası: {e}")
+
+        qr_mode_active = False
+        qr_signal_monitor_loop._qr_processing = False
+
+def read_qr_from_camera_frames(timeout=60):
+    """
+    Mevcut kamera akışından QR kod okur.
+    Kamerayı kapatmadan mevcut frame'leri kullanır.
+    """
+    logger.info(f"QR kod taraması başlatıldı (Timeout: {timeout}s)")
+
+    start_time = time.time()
+    detector = cv2.QRCodeDetector()
+    frame_count = 0
+
+    while (time.time() - start_time) < timeout:
+        try:
+            # Global kamera frame'ini kullan
+            with shared_frame_lock:
+                if shared_camera_frame is None:
+                    time.sleep(0.1)
+                    continue
+
+                frame = shared_camera_frame.copy()
+
+            frame_count += 1
+
+            # Her 3 frame'de bir kontrol et (performans için)
+            if frame_count % 3 != 0:
+                time.sleep(0.05)
+                continue
+
+            # QR kod tespiti
+            data, bbox, _ = detector.detectAndDecode(frame)
+
+            if data and len(data.strip()) > 0:
+                logger.info(f"✓ QR kod bulundu! ({frame_count} frame işlendi)")
+                return data.strip()
+
+            # Her 30 frame'de bir log
+            if frame_count % 30 == 0:
+                elapsed = time.time() - start_time
+                logger.debug(f"QR taraması devam ediyor... ({frame_count} frame, {elapsed:.1f}s)")
+
+            time.sleep(0.05)
+
+        except Exception as e:
+            logger.error(f"QR okuma hatası (frame {frame_count}): {e}")
+            time.sleep(0.1)
+
+    logger.warning(f"QR kod bulunamadı - timeout ({frame_count} frame işlendi)")
+    return None
+
+def parse_qr_data(qr_data):
+    """QR kod verisini parse et ve mod/parametreleri döndür"""
+    try:
+        qr_data = qr_data.strip()
+
+        # AP Mode formatı: APMODE2.4gch6 veya APMODE5gch36
+        if qr_data.startswith("APMODE"):
+            band_channel = qr_data[6:]  # "2.4gch6" veya "5gch36"
+
+            if band_channel.startswith("2.4gch"):
+                band = "2.4"
+                hw_mode = "g"
+                channel = int(band_channel[6:])  # "2.4gch6" -> 6
+            elif band_channel.startswith("5gch"):
+                band = "5"
+                hw_mode = "a"
+                channel = int(band_channel[4:])  # "5gch36" -> 36
+            else:
+                return None, f"Geçersiz AP band formatı: {band_channel}"
+
+            # Kanal doğrulama
+            valid_24_channels = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            valid_5_channels = [36, 40, 44, 48, 149, 153, 157, 161, 165]
+
+            if band == "2.4" and channel not in valid_24_channels:
+                return None, f"Geçersiz 2.4GHz kanalı: {channel}"
+            if band == "5" and channel not in valid_5_channels:
+                return None, f"Geçersiz 5GHz kanalı: {channel}"
+
+            return {
+                'mode': 'ap',
+                'band': band,
+                'hw_mode': hw_mode,
+                'channel': channel
+            }, None
+
+        # WiFi MECARD formatı: WIFI:T:WPA;S:ssid;P:password;;
+        elif qr_data.startswith("WIFI:"):
+            import re
+
+            ssid_match = re.search(r'S:([^;]+);', qr_data)
+            pass_match = re.search(r'P:([^;]+);', qr_data)
+
+            if not ssid_match:
+                return None, "WiFi QR kodu SSID içermiyor"
+
+            ssid = ssid_match.group(1)
+            password = pass_match.group(1) if pass_match else ""
+
+            if len(ssid) == 0:
+                return None, "WiFi QR kodu boş SSID içeriyor"
+
+            return {
+                'mode': 'sta',
+                'ssid': ssid,
+                'password': password
+            }, None
+
+        else:
+            return None, f"Desteklenmeyen QR formatı: {qr_data[:20]}..."
+
+    except Exception as e:
+        logger.error(f"QR parse hatası: {e}", exc_info=True)
+        return None, str(e)
+
+def apply_wifi_config(config):
+    """
+    QR koddan okunan WiFi yapılandırmasını uygular.
+    script.txt içindeki scriptleri kullanır.
+    """
+    try:
+        if config['mode'] == 'ap':
+            logger.info(f"AP Mode yapılandırması: {config['band']}GHz band, kanal {config['channel']}")
+            return configure_ap_mode_via_script(config['band'], config['hw_mode'], config['channel'])
+
+        elif config['mode'] == 'sta':
+            logger.info(f"STA Mode yapılandırması: SSID={config['ssid']}")
+            return configure_sta_mode_via_script(config['ssid'], config['password'])
+
+        else:
+            logger.error(f"Bilinmeyen WiFi modu: {config['mode']}")
+            return False
+
+    except Exception as e:
+        logger.error(f"WiFi yapılandırma hatası: {e}", exc_info=True)
+        return False
+
+def configure_sta_mode_via_script(ssid, password):
+    """
+    STA mode script'ini dinamik olarak günceller ve çalıştırır.
+    wifi_change.py kodundaki gibi çalışır.
+    """
+    try:
+        # script.txt'i oku
+        script_file = os.path.join(BASE_DIR, "script.txt")
+        if not os.path.exists(script_file):
+            logger.error(f"script.txt bulunamadı: {script_file}")
+            return False
+
+        with open(script_file, 'r', encoding='utf-8') as f:
+            script_content = f.read()
+
+        # SSID ve PSK değerlerini değiştir
+        import re
+
+        # STA_MODE bölümündeki SSID ve PSK'yi değiştir
+        script_content = re.sub(
+            r'(# --- STA MODE ---.*?SSID=")[^"]*(")',
+            rf'\1{ssid}\2',
+            script_content,
+            flags=re.DOTALL
+        )
+
+        script_content = re.sub(
+            r'(# --- STA MODE ---.*?PSK=")[^"]*(")',
+            rf'\1{password}\2',
+            script_content,
+            flags=re.DOTALL
+        )
+
+        # Güncellenmiş script'i geçici dosyaya yaz
+        temp_script = "/tmp/sta_mode_update.sh"
+        with open(temp_script, 'w', encoding='utf-8') as f:
+            f.write(script_content)
+
+        # Script'i çalıştır
+        logger.info("STA mode script'i çalıştırılıyor...")
+        result = subprocess.run(
+            ["sudo", "bash", temp_script],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            logger.info("✓ STA mode script başarıyla tamamlandı")
+
+            # STA mode script'ini çalıştır
+            sta_script = "/opt/lscope/bin/sta_mode.sh"
+            if os.path.exists(sta_script):
+                logger.info("sta_mode.sh çalıştırılıyor...")
+                result2 = subprocess.run(
+                    ["sudo", "bash", sta_script],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+
+                if result2.returncode == 0:
+                    logger.info(f"✓ WiFi STA moduna geçildi: {ssid}")
+                    return True
+                else:
+                    logger.error(f"sta_mode.sh hatası: {result2.stderr}")
+                    return False
+            else:
+                logger.error(f"sta_mode.sh bulunamadı: {sta_script}")
+                return False
+        else:
+            logger.error(f"Script güncelleme hatası: {result.stderr}")
+            return False
+
+    except Exception as e:
+        logger.error(f"STA mode yapılandırma hatası: {e}", exc_info=True)
+        return False
+
+def configure_ap_mode_via_script(band, hw_mode, channel):
+    """
+    AP mode'a geçer.
+    script.txt içindeki ap_mode.sh script'ini çalıştırır.
+    """
+    try:
+        ap_script = "/opt/lscope/bin/ap_mode.sh"
+
+        if not os.path.exists(ap_script):
+            logger.error(f"ap_mode.sh bulunamadı: {ap_script}")
+            return False
+
+        logger.info(f"AP Mode geçişi: {band}GHz, kanal {channel}")
+        logger.info("ap_mode.sh çalıştırılıyor...")
+
+        result = subprocess.run(
+            ["sudo", "bash", ap_script],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            logger.info(f"✓ WiFi AP moduna geçildi: {band}GHz, kanal {channel}")
+            return True
+        else:
+            logger.error(f"ap_mode.sh hatası: {result.stderr}")
+            return False
+
+    except Exception as e:
+        logger.error(f"AP mode yapılandırma hatası: {e}", exc_info=True)
+        return False
 
 # ============================== Model & Auth ==============================
 class User(db.Model):
