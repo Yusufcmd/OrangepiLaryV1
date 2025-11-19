@@ -25,13 +25,10 @@ except ImportError as e:
 
 try:
     import cv2
-    from pyzbar import pyzbar
 except ImportError as e:
-    print("⚠ UYARI: OpenCV veya pyzbar yüklü değil. QR okuma çalışmayacak.")
+    print("⚠ UYARI: OpenCV yüklü değil. QR okuma çalışmayacak.")
     print("  sudo apt-get install -y python3-opencv")
-    print("  pip3 install pyzbar")
     cv2 = None
-    pyzbar = None
 
 # Kamera kontrol sinyali için dosya yolu
 CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
@@ -438,9 +435,9 @@ def is_duty_in_range(duty, target, tolerance=PWM_TOLERANCE):
 
 # ==================== QR KOD OKUMA ====================
 def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
-    """Kameradan QR kod oku"""
-    if cv2 is None or pyzbar is None:
-        logger.error("HATA: OpenCV veya pyzbar yüklü değil!")
+    """Kameradan QR kod oku - OpenCV QRCodeDetector kullanarak"""
+    if cv2 is None:
+        logger.error("HATA: OpenCV yüklü değil!")
         return None
 
     # QR modu başladığını bildir
@@ -477,6 +474,9 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
     start_time = time.time()
     qr_data = None
 
+    # OpenCV QRCodeDetector oluştur
+    qr_detector = cv2.QRCodeDetector()
+
     try:
         frame_count = 0
         while (time.time() - start_time) < timeout:
@@ -488,11 +488,12 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
 
             frame_count += 1
 
-            # QR kodları tespit et
-            decoded_objects = pyzbar.decode(frame)
+            # OpenCV QRCodeDetector ile QR kod tespit et ve çöz
+            data, bbox, straight_qrcode = qr_detector.detectAndDecode(frame)
 
-            for obj in decoded_objects:
-                qr_data = obj.data.decode('utf-8')
+            # QR kod bulundu ve decode edildi mi kontrol et
+            if data:
+                qr_data = data
                 logger.info(f"✓ QR kod okundu: {qr_data}")
                 cap.release()
                 signal_qr_mode_end()
