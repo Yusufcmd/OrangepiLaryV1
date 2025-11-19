@@ -1294,22 +1294,23 @@ def generate_frames():
             except Exception as _e:
                 logger.error(f"recordsVideo.push_frame hatası: {_e}")
 
-            # Paylaşımlı kareyi güncelle (QR okuma için)
+            # Paylaşımlı kareyi güncelle (QR okuma için) - SADECE QR MODU AKTİFSE
             frame_count += 1
-            with shared_frame_lock:
-                shared_camera_frame = frame.copy()
-                shared_frame_timestamp = now
+            if qr_mode_active:
+                with shared_frame_lock:
+                    shared_camera_frame = frame.copy()
+                    shared_frame_timestamp = now
 
-                # Dosyaya da yaz (recovery_gpio_monitor.py için)
-                # Her 3 karede bir yaz (performans için)
-                if frame_count % 3 == 0:
-                    try:
-                        np.save(shared_frame_file, frame)
-                        # İlk 3 başarılı yazımda log göster
-                        if frame_count <= 9:
-                            logger.info(f"✓ Paylaşımlı kare dosyasına yazıldı: {shared_frame_file} (kare #{frame_count})")
-                    except Exception as save_err:
-                        logger.warning(f"Paylaşımlı kare kaydetme hatası: {save_err}")
+                    # Dosyaya da yaz (recovery_gpio_monitor.py için)
+                    # Her 3 karede bir yaz (performans için)
+                    if frame_count % 3 == 0:
+                        try:
+                            np.save(shared_frame_file, frame)
+                            # İlk 3 başarılı yazımda log göster
+                            if frame_count <= 9:
+                                logger.info(f"✓ Paylaşımlı kare dosyasına yazıldı: {shared_frame_file} (kare #{frame_count})")
+                        except Exception as save_err:
+                            logger.warning(f"Paylaşımlı kare kaydetme hatası: {save_err}")
 
             ever_connected = True; error_count = 0
             last_ok = frame.copy(); last_ts = now
