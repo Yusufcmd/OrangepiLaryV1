@@ -954,13 +954,6 @@ def generate_frames():
 
     while True:
         try:
-            # QR okuma modu aktifse, placeholder göster
-            if qr_mode_active:
-                ph = create_placeholder("QR Kod Okunuyor...")
-                _, buf = cv2.imencode(".jpg", ph)
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-                eventlet.sleep(0.5)
-                continue
 
             # Normal işlem
             if camera is None or not camera.isOpened():
@@ -1008,12 +1001,22 @@ def generate_frames():
                 if frame_count % 3 == 0:
                     try:
                         np.save(shared_frame_file, frame)
+                        # İlk 3 başarılı yazımda log göster
+                        if frame_count <= 9:
+                            logger.info(f"✓ Paylaşımlı kare dosyasına yazıldı: {shared_frame_file} (kare #{frame_count})")
                     except Exception as save_err:
-                        logger.debug(f"Paylaşımlı kare kaydetme hatası: {save_err}")
+                        logger.warning(f"Paylaşımlı kare kaydetme hatası: {save_err}")
 
             ever_connected = True; error_count = 0
             last_ok = frame.copy(); last_ts = now
-            _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+
+            # QR okuma modu aktifse stream'e placeholder göster, aksi halde normal kare göster
+            if qr_mode_active:
+                ph = create_placeholder("QR Kod Okunuyor...")
+                _, buf = cv2.imencode(".jpg", ph, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            else:
+                _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
 
         except Exception as e:
