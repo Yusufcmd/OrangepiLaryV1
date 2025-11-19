@@ -223,16 +223,19 @@ def check_qr_mode_signal():
     """QR modu sinyalini kontrol et"""
     global qr_mode_active
     try:
-        if os.path.exists(CAMERA_SIGNAL_FILE):
+        # Sinyal dosyasının varlığını kontrol et
+        signal_exists = os.path.exists(CAMERA_SIGNAL_FILE)
+
+        if signal_exists:
             # Sinyal dosyası varsa QR modu aktif
             if not qr_mode_active:
-                logger.info("QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
+                logger.info("✓ QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
                 qr_mode_active = True
             return True
         else:
             # Sinyal dosyası yoksa QR modu pasif
             if qr_mode_active:
-                logger.info("QR modu sinyali temizlendi - normal kamera modu")
+                logger.info("✓ QR modu sinyali temizlendi - normal kamera modu")
                 qr_mode_active = False
             return False
     except Exception as e:
@@ -241,7 +244,12 @@ def check_qr_mode_signal():
 
 def qr_signal_monitor_loop():
     """QR modu sinyal dosyasını sürekli izleyen thread"""
-    logger.info("QR sinyal monitörü başlatıldı")
+    global qr_mode_active
+
+    # Thread başlarken QR modunun kapalı olduğundan emin ol
+    qr_mode_active = False
+    logger.info("QR sinyal monitörü başlatıldı - QR modu başlangıçta KAPALI")
+
     while not _qr_monitor_stop_evt.is_set():
         try:
             check_qr_mode_signal()
@@ -250,6 +258,7 @@ def qr_signal_monitor_loop():
             if qr_mode_active and not getattr(qr_signal_monitor_loop, '_qr_processing', False):
                 qr_signal_monitor_loop._qr_processing = True
                 # QR okuma işlemini başlat
+                logger.info("QR modu aktif - QR tarama thread'i başlatılıyor")
                 threading.Thread(target=process_qr_scan, daemon=True).start()
 
         except Exception as e:
@@ -260,6 +269,13 @@ def qr_signal_monitor_loop():
 def process_qr_scan():
     """QR kod tarama işlemini yürütür"""
     global qr_mode_active
+
+    # QR modu aktif değilse işlemi başlatma
+    if not qr_mode_active:
+        logger.warning("QR tarama işlemi iptal - QR modu aktif değil!")
+        qr_signal_monitor_loop._qr_processing = False
+        return
+
     logger.info("="*60)
     logger.info("QR TARAMA İŞLEMİ BAŞLATILDI (main.py)")
     logger.info("="*60)
@@ -299,10 +315,19 @@ def process_qr_scan():
         # QR modunu kapat
         try:
             if os.path.exists(CAMERA_SIGNAL_FILE):
-                os.remove(CAMERA_SIGNAL_FILE)
-                logger.info("QR modu sinyali temizlendi")
+                try:
+                    os.remove(CAMERA_SIGNAL_FILE)
+                    logger.info("QR modu sinyali temizlendi")
+                except PermissionError:
+                    # İzin hatası varsa sudo ile sil
+                    try:
+                        import subprocess
+                        subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                        logger.info("QR modu sinyali sudo ile temizlendi")
+                    except Exception as se:
+                        logger.warning(f"Sinyal dosyası sudo ile silinemedi: {se}")
         except Exception as e:
-            logger.error(f"Sinyal dosyası temizleme hatası: {e}")
+            logger.warning(f"Sinyal dosyası temizleme hatası: {e}")
 
         qr_mode_active = False
         qr_signal_monitor_loop._qr_processing = False
@@ -312,6 +337,13 @@ def read_qr_from_camera_frames(timeout=60):
     Mevcut kamera akışından QR kod okur.
     Kamerayı kapatmadan mevcut frame'leri kullanır.
     """
+    global qr_mode_active
+
+    # QR modu aktif değilse işlemi başlatma
+    if not qr_mode_active:
+        logger.warning("QR kod taraması iptal - QR modu aktif değil!")
+        return None
+
     logger.info(f"QR kod taraması başlatıldı (Timeout: {timeout}s)")
 
     start_time = time.time()
@@ -320,6 +352,11 @@ def read_qr_from_camera_frames(timeout=60):
 
     while (time.time() - start_time) < timeout:
         try:
+            # QR modunun hala aktif olduğunu kontrol et
+            if not qr_mode_active:
+                logger.info("QR kod taraması durduruluyor - QR modu devre dışı bırakıldı")
+                return None
+
             # Global kamera frame'ini kullan
             with shared_frame_lock:
                 if shared_camera_frame is None:
@@ -2223,10 +2260,21 @@ if __name__ == "__main__":
     # Başlangıçta sinyal dosyasını temizle
     try:
         if os.path.exists(CAMERA_SIGNAL_FILE):
-            os.remove(CAMERA_SIGNAL_FILE)
-            logger.info("Başlangıçta QR modu sinyal dosyası temizlendi")
+            try:
+                os.remove(CAMERA_SIGNAL_FILE)
+                logger.info("Başlangıçta QR modu sinyal dosyası temizlendi")
+            except PermissionError:
+                # İzin hatası varsa sudo ile sil
+                try:
+                    import subprocess
+                    subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                    logger.info("QR modu sinyal dosyası sudo ile temizlendi")
+                except Exception as se:
+                    logger.warning(f"Sinyal dosyası sudo ile silinemedi: {se}")
+        else:
+            logger.info("Başlangıçta QR modu sinyal dosyası yok - Normal başlatılıyor")
     except Exception as e:
-        logger.warning(f"Sinyal dosyası temizleme hatası: {e}")
+        logger.warning(f"Sinyal dosyası kontrolü hatası: {e}")
 
     with app.app_context():
         ensure_default_user()

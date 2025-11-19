@@ -121,8 +121,25 @@ LED_BLINK_INTERVAL = 0.3
 def signal_qr_mode_start():
     """Main uygulamasına QR modunun başladığını bildir"""
     try:
+        # Önce eski dosyayı temizle (varsa)
+        if os.path.exists(CAMERA_SIGNAL_FILE):
+            try:
+                os.remove(CAMERA_SIGNAL_FILE)
+            except PermissionError:
+                # İzin hatası varsa sudo ile sil
+                import subprocess
+                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+
+        # Yeni sinyal dosyası oluştur
         with open(CAMERA_SIGNAL_FILE, 'w') as f:
             f.write(f"{time.time()}\nQR_MODE_ACTIVE")
+
+        # Dosya izinlerini ayarla (herkes okuyup silebilsin)
+        try:
+            os.chmod(CAMERA_SIGNAL_FILE, 0o666)
+        except:
+            pass
+
         logger.info(f"✓ QR modu sinyali gönderildi: {CAMERA_SIGNAL_FILE}")
         return True
     except Exception as e:
@@ -133,7 +150,12 @@ def signal_qr_mode_end():
     """Main uygulamasına QR modunun bittiğini bildir"""
     try:
         if os.path.exists(CAMERA_SIGNAL_FILE):
-            os.remove(CAMERA_SIGNAL_FILE)
+            try:
+                os.remove(CAMERA_SIGNAL_FILE)
+            except PermissionError:
+                # İzin hatası varsa sudo ile sil
+                import subprocess
+                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
         logger.info("✓ QR modu sinyali temizlendi")
         return True
     except Exception as e:
