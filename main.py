@@ -209,59 +209,30 @@ batt_value = 0
 last_10_readings = deque(maxlen=50)
 active_connections = set()
 
+# Paylaşımlı kamera karesi - QR okuma için
+shared_camera_frame = None
+shared_frame_lock = threading.Lock()
+shared_frame_timestamp = 0
+
 # QR modu sinyal dosyası
 CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
 _qr_monitor_stop_evt = threading.Event()
 
 def check_qr_mode_signal():
     """QR modu sinyalini kontrol et"""
-    global qr_mode_active, camera
+    global qr_mode_active
     try:
         if os.path.exists(CAMERA_SIGNAL_FILE):
             # Sinyal dosyası varsa QR modu aktif
             if not qr_mode_active:
-                logger.info("QR modu sinyali algılandı - kamera ZORLA serbest bırakılıyor")
-                # ÖNEMLİ: Önce flag'i set et ki generate_frames kamerayı açmaya çalışmasın
+                logger.info("QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
                 qr_mode_active = True
-
-                # Kamerayı zorla serbest bırak
-                with camera_lock:
-                    if camera is not None:
-                        try:
-                            # OpenCV kaynaklarını temizle
-                            cv2.destroyAllWindows()
-                            time.sleep(0.2)
-
-                            # Kamerayı kapat - birden fazla kez dene
-                            for attempt in range(3):
-                                try:
-                                    if camera.isOpened():
-                                        camera.release()
-                                    camera.release()  # İkinci kez dene
-                                    time.sleep(0.2)
-                                except Exception as ex:
-                                    logger.debug(f"Kamera release denemesi {attempt+1}: {ex}")
-
-                            # Referansı temizle
-                            camera = None
-
-                            # OpenCV kaynaklarını tekrar temizle
-                            cv2.destroyAllWindows()
-
-                            logger.info("✓ Kamera QR modu için ZORLA serbest bırakıldı")
-                        except Exception as e:
-                            logger.warning(f"Kamera release hatası: {e}")
-                            camera = None  # Her durumda None yap
-
-                # Kameranın tamamen serbest kalması için daha fazla bekle
-                time.sleep(1.0)  # 0.5'ten 1.0'a çıkarıldı
             return True
         else:
             # Sinyal dosyası yoksa QR modu pasif
             if qr_mode_active:
-                logger.info("QR modu sinyali temizlendi - kamera yeniden başlatılıyor")
+                logger.info("QR modu sinyali temizlendi - normal kamera modu")
                 qr_mode_active = False
-                time.sleep(1.5)  # QR okuma modunun tamamen bitmesini bekle (1.0'dan 1.5'e)
             return False
     except Exception as e:
         logger.error(f"QR modu sinyal kontrolü hatası: {e}")
@@ -308,6 +279,17 @@ def login_required(fn):
             return redirect(url_for("login"))
         return fn(*a, **k)
     return _wrap
+
+def get_shared_camera_frame():
+    """
+    QR okuma için paylaşımlı kamera karesini al.
+    Returns: (frame, timestamp) veya (None, 0)
+    """
+    global shared_camera_frame, shared_frame_lock, shared_frame_timestamp
+    with shared_frame_lock:
+        if shared_camera_frame is not None:
+            return shared_camera_frame.copy(), shared_frame_timestamp
+        return None, 0
 
 # =========================== Sinyal / Hızlı çıkış =========================
 def _graceful_exit(signum, frame):
@@ -963,62 +945,34 @@ def arkaplan_isi():
             time.sleep(5 if error_count >= max_errors else 1)
 
 def generate_frames():
-    global camera, ever_connected
+    global camera, ever_connected, shared_camera_frame, shared_frame_lock, shared_frame_timestamp
     connection_retry_timer = 0
     error_count, max_errors = 0, 3
     last_ok = None; last_ts = 0
 
     while True:
         try:
-            # QR okuma modu aktifse, kamerayı TAMAMEN serbest bırak ve SADECE placeholder gönder
+            # QR okuma modu aktifse, placeholder göster
             if qr_mode_active:
-                # Kamera açıksa ZORLA kapat
-                with camera_lock:
-                    if camera is not None:
-                        try:
-                            # Kamerayı tamamen serbest bırak
-                            if camera.isOpened():
-                                camera.release()
-                            camera.release()  # İkinci kez dene
-                            # OpenCV kaynaklarını temizle
-                            cv2.destroyAllWindows()
-                        except Exception as ex:
-                            logger.debug(f"Kamera release hatası (normal): {ex}")
-                        finally:
-                            camera = None
-
-                # Placeholder göster ve daha uzun bekle
                 ph = create_placeholder("QR Kod Okunuyor...")
                 _, buf = cv2.imencode(".jpg", ph)
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-                eventlet.sleep(1.0)  # 1 saniye bekle - kamerayı tamamen serbest bırak
+                eventlet.sleep(0.5)
                 continue
 
-            # QR modu değilse normal işlem
+            # Normal işlem
             if camera is None or not camera.isOpened():
-                # QR modu aktifse kamerayı açmaya çalışma
-                if qr_mode_active:
-                    ph = create_placeholder("QR Kod Okunuyor...")
-                    _, buf = cv2.imencode(".jpg", ph)
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
-                    eventlet.sleep(1.0)
-                    continue
-
                 now = time.time()
                 if now - connection_retry_timer >= 1:
                     connection_retry_timer = now
                     with camera_lock:
-                        if not qr_mode_active:  # Tekrar kontrol et
+                        if not qr_mode_active:
                             init_camera()
                 if camera is None or not camera.isOpened():
                     ph = create_placeholder("Kamera bekleniyor...")
                     _, buf = cv2.imencode(".jpg", ph)
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
                     eventlet.sleep(0.1); continue
-
-            # QR modu tekrar kontrol - camera.read() öncesi
-            if qr_mode_active:
-                continue
 
             ok, frame = camera.read()
             now = time.time()
@@ -1028,17 +982,6 @@ def generate_frames():
                 eventlet.sleep(0.04); continue
 
             if not ok or frame is None:
-                # QR modu kontrolü - kamera okuma hatası varsa
-                if qr_mode_active:
-                    with camera_lock:
-                        if camera is not None:
-                            try:
-                                camera.release()
-                            except Exception:
-                                pass
-                            camera = None
-                    eventlet.sleep(0.5)
-                    continue
                 camera.release(); camera = None
                 ph = create_placeholder("Kare yok — yeniden bağlanılıyor…")
                 _, buf = cv2.imencode(".jpg", ph)
@@ -1051,6 +994,11 @@ def generate_frames():
                     recordsVideo.push_frame(frame)
             except Exception as _e:
                 logger.error(f"recordsVideo.push_frame hatası: {_e}")
+
+            # Paylaşımlı kareyi güncelle (QR okuma için)
+            with shared_frame_lock:
+                shared_camera_frame = frame.copy()
+                shared_frame_timestamp = now
 
             ever_connected = True; error_count = 0
             last_ok = frame.copy(); last_ts = now

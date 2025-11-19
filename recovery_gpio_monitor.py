@@ -443,7 +443,10 @@ def is_duty_in_range(duty, target, tolerance=PWM_TOLERANCE):
 
 # ==================== QR KOD OKUMA ====================
 def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
-    """Kameradan QR kod oku - OpenCV QRCodeDetector kullanarak"""
+    """
+    Main.py'den paylaşımlı kamera karelerini kullanarak QR kod oku.
+    Kamerayı açmaya çalışmak yerine main.py'nin kamera akışından yararlanır.
+    """
     if cv2 is None:
         logger.error("HATA: OpenCV yüklü değil!")
         return None
@@ -451,80 +454,95 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
     # QR modu başladığını bildir
     signal_qr_mode_start()
 
-    # Kameranın serbest kalmasını bekle
-    wait_for_camera_release()
+    # Main modülünü import et
+    try:
+        import sys
+        import importlib
 
-    logger.info(f"Kamera açılıyor... (Timeout: {timeout}s)")
+        # main.py modülünü yükle
+        if 'main' not in sys.modules:
+            # main.py'nin bulunduğu dizini ekle
+            main_dir = os.path.dirname(os.path.abspath(__file__))
+            if main_dir not in sys.path:
+                sys.path.insert(0, main_dir)
 
-    # Birkaç kez deneme yap
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            cap = cv2.VideoCapture(CAMERA_INDEX)
+            main_module = importlib.import_module('main')
+        else:
+            main_module = sys.modules['main']
 
-            if cap.isOpened():
-                logger.info(f"✓ Kamera açıldı (deneme {attempt + 1}/{max_retries})")
-                break
+        # Paylaşımlı kare alma fonksiyonunu kontrol et
+        if not hasattr(main_module, 'get_shared_camera_frame'):
+            logger.error("HATA: main.py'de get_shared_camera_frame fonksiyonu bulunamadı!")
+            signal_qr_mode_end()
+            return None
 
-            cap.release()
-            logger.warning(f"Kamera açılamadı, yeniden deneniyor... ({attempt + 1}/{max_retries})")
-            time.sleep(1)
+        logger.info("✓ Main modülü yüklendi, paylaşımlı kamera kullanılacak")
 
-        except Exception as e:
-            logger.warning(f"Kamera açma hatası (deneme {attempt + 1}): {e}")
-            time.sleep(1)
-    else:
-        logger.error(f"HATA: Kamera açılamadı ({max_retries} deneme)")
+    except Exception as e:
+        logger.error(f"Main modülü yüklenemedi: {e}")
         signal_qr_mode_end()
         return None
 
-    logger.info("✓ Kamera açıldı. QR kod bekleniyor...")
+    logger.info(f"✓ Paylaşımlı kameradan QR kod bekleniyor... (Timeout: {timeout}s)")
     start_time = time.time()
     qr_data = None
 
     # OpenCV QRCodeDetector oluştur
     qr_detector = cv2.QRCodeDetector()
 
+    frame_count = 0
+    last_frame_time = 0
+
     try:
-        frame_count = 0
         while (time.time() - start_time) < timeout:
-            ret, frame = cap.read()
-            if not ret:
-                logger.warning("Kamera görüntü okuması başarısız")
+            # Main.py'den paylaşımlı kareyi al
+            frame, frame_timestamp = main_module.get_shared_camera_frame()
+
+            if frame is None:
+                logger.debug("Kamera karesi henüz hazır değil, bekleniyor...")
                 time.sleep(0.1)
                 continue
 
+            # Aynı kareyi tekrar işleme (timestamp kontrolü)
+            if frame_timestamp == last_frame_time:
+                time.sleep(0.05)
+                continue
+
+            last_frame_time = frame_timestamp
             frame_count += 1
 
             # OpenCV QRCodeDetector ile QR kod tespit et ve çöz
             data, bbox, straight_qrcode = qr_detector.detectAndDecode(frame)
 
-            # QR kod bulundu ve decode edildi mi kontrol et
             if data:
                 qr_data = data
-                logger.info(f"✓ QR kod okundu: {qr_data}")
-                cap.release()
-                signal_qr_mode_end()
-                # Kameranın tekrar başlaması için kısa bekleme
-                time.sleep(1)
-                return qr_data
+                logger.info(f"✓ QR kod okundu: {qr_data[:50]}... ({frame_count} kare işlendi)")
+                break
 
-            # Her 50 frame'de bir log
-            if frame_count % 50 == 0:
+            # Her 30 karede bir ilerleme göster
+            if frame_count % 30 == 0:
                 elapsed = time.time() - start_time
-                logger.debug(f"QR aranıyor... ({frame_count} frame, {elapsed:.1f}s)")
+                logger.debug(f"QR aranıyor... {frame_count} kare işlendi ({elapsed:.1f}s)")
 
-            time.sleep(0.1)  # CPU kullanımını azalt
+            time.sleep(0.05)  # CPU kullanımını azalt
 
+    except KeyboardInterrupt:
+        logger.info("QR okuma kullanıcı tarafından iptal edildi")
+    except Exception as e:
+        logger.error(f"QR okuma hatası: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
     finally:
-        cap.release()
-        logger.debug("Kamera kapatıldı")
+        # QR modu bittiğini bildir
         signal_qr_mode_end()
-        # Kameranın tekrar başlaması için kısa bekleme
-        time.sleep(1)
 
-    logger.warning(f"⚠ Timeout: {timeout} saniye içinde QR kod okunamadı")
-    return None
+        elapsed = time.time() - start_time
+        if qr_data:
+            logger.info(f"✓ QR okuma başarılı: {elapsed:.1f}s, {frame_count} kare")
+        else:
+            logger.warning(f"⚠ QR okunamadı: {elapsed:.1f}s, {frame_count} kare")
+
+    return qr_data
 
 def parse_qr_data(qr_data):
     """QR kod verisini parse et ve mod/parametreleri döndür"""
