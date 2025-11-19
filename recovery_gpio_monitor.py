@@ -444,8 +444,8 @@ def is_duty_in_range(duty, target, tolerance=PWM_TOLERANCE):
 # ==================== QR KOD OKUMA ====================
 def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
     """
-    Main.py'den paylaşımlı kamera karelerini kullanarak QR kod oku.
-    Kamerayı açmaya çalışmak yerine main.py'nin kamera akışından yararlanır.
+    Main.py'den paylaşımlı dosya üzerinden kamera karelerini kullanarak QR kod oku.
+    Main.py import etmeden, sadece /tmp/clary_camera_frame.npy dosyasını okur.
     """
     if cv2 is None:
         logger.error("HATA: OpenCV yüklü değil!")
@@ -454,36 +454,12 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
     # QR modu başladığını bildir
     signal_qr_mode_start()
 
-    # Main modülünü import et
-    try:
-        import sys
-        import importlib
+    # Paylaşımlı kare dosyası
+    shared_frame_file = "/tmp/clary_camera_frame.npy"
 
-        # main.py modülünü yükle
-        if 'main' not in sys.modules:
-            # main.py'nin bulunduğu dizini ekle
-            main_dir = os.path.dirname(os.path.abspath(__file__))
-            if main_dir not in sys.path:
-                sys.path.insert(0, main_dir)
+    logger.info(f"✓ Paylaşımlı dosyadan QR kod bekleniyor... (Timeout: {timeout}s)")
+    logger.info(f"   Kare dosyası: {shared_frame_file}")
 
-            main_module = importlib.import_module('main')
-        else:
-            main_module = sys.modules['main']
-
-        # Paylaşımlı kare alma fonksiyonunu kontrol et
-        if not hasattr(main_module, 'get_shared_camera_frame'):
-            logger.error("HATA: main.py'de get_shared_camera_frame fonksiyonu bulunamadı!")
-            signal_qr_mode_end()
-            return None
-
-        logger.info("✓ Main modülü yüklendi, paylaşımlı kamera kullanılacak")
-
-    except Exception as e:
-        logger.error(f"Main modülü yüklenemedi: {e}")
-        signal_qr_mode_end()
-        return None
-
-    logger.info(f"✓ Paylaşımlı kameradan QR kod bekleniyor... (Timeout: {timeout}s)")
     start_time = time.time()
     qr_data = None
 
@@ -492,15 +468,34 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
 
     frame_count = 0
     last_frame_time = 0
+    no_frame_count = 0
+    max_no_frame_warnings = 3
 
     try:
+        import numpy as np
+
         while (time.time() - start_time) < timeout:
-            # Main.py'den paylaşımlı kareyi al
-            frame, frame_timestamp = main_module.get_shared_camera_frame()
+            frame = None
+            frame_timestamp = 0
+
+            # Paylaşımlı dosyadan kareyi oku
+            try:
+                if os.path.exists(shared_frame_file):
+                    frame = np.load(shared_frame_file)
+                    frame_timestamp = os.path.getmtime(shared_frame_file)
+                    no_frame_count = 0  # Reset counter
+                else:
+                    no_frame_count += 1
+                    if no_frame_count <= max_no_frame_warnings:
+                        logger.warning(f"Paylaşımlı kare dosyası henüz yok: {shared_frame_file}")
+                        logger.info("   → main.py çalışıyor mu? Kamera aktif mi?")
+            except Exception as e:
+                no_frame_count += 1
+                if no_frame_count <= max_no_frame_warnings:
+                    logger.warning(f"Paylaşımlı kare okuma hatası: {e}")
 
             if frame is None:
-                logger.debug("Kamera karesi henüz hazır değil, bekleniyor...")
-                time.sleep(0.1)
+                time.sleep(0.2)
                 continue
 
             # Aynı kareyi tekrar işleme (timestamp kontrolü)
@@ -522,10 +517,14 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
             # Her 30 karede bir ilerleme göster
             if frame_count % 30 == 0:
                 elapsed = time.time() - start_time
-                logger.debug(f"QR aranıyor... {frame_count} kare işlendi ({elapsed:.1f}s)")
+                logger.info(f"  QR aranıyor... {frame_count} kare işlendi ({elapsed:.1f}s)")
 
             time.sleep(0.05)  # CPU kullanımını azalt
 
+    except ImportError:
+        logger.error("HATA: NumPy yüklü değil! 'pip install numpy' çalıştırın")
+        signal_qr_mode_end()
+        return None
     except KeyboardInterrupt:
         logger.info("QR okuma kullanıcı tarafından iptal edildi")
     except Exception as e:
@@ -540,7 +539,9 @@ def read_qr_code_from_camera(timeout=QR_READ_TIMEOUT):
         if qr_data:
             logger.info(f"✓ QR okuma başarılı: {elapsed:.1f}s, {frame_count} kare")
         else:
-            logger.warning(f"⚠ QR okunamadı: {elapsed:.1f}s, {frame_count} kare")
+            logger.warning(f"⚠ QR okunamadı: {elapsed:.1f}s, {frame_count} kare işlendi")
+            if frame_count == 0:
+                logger.error("   HATA: Hiç kare alınamadı! main.py çalışmıyor olabilir.")
 
     return qr_data
 

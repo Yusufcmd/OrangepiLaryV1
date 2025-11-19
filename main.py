@@ -945,10 +945,11 @@ def arkaplan_isi():
             time.sleep(5 if error_count >= max_errors else 1)
 
 def generate_frames():
-    global camera, ever_connected, shared_camera_frame, shared_frame_lock, shared_frame_timestamp
+    global camera, ever_connected, shared_camera_frame, shared_frame_lock, shared_frame_timestamp, shared_frame_file
     connection_retry_timer = 0
     error_count, max_errors = 0, 3
     last_ok = None; last_ts = 0
+    frame_count = 0  # Kare sayacı
 
     while True:
         try:
@@ -996,9 +997,19 @@ def generate_frames():
                 logger.error(f"recordsVideo.push_frame hatası: {_e}")
 
             # Paylaşımlı kareyi güncelle (QR okuma için)
+            frame_count += 1
             with shared_frame_lock:
                 shared_camera_frame = frame.copy()
                 shared_frame_timestamp = now
+
+                # Dosyaya da yaz (recovery_gpio_monitor.py için)
+                # Her 3 karede bir yaz (performans için)
+                if frame_count % 3 == 0:
+                    try:
+                        import numpy as np
+                        np.save(shared_frame_file, frame)
+                    except Exception:
+                        pass  # Sessizce devam et
 
             ever_connected = True; error_count = 0
             last_ok = frame.copy(); last_ts = now
