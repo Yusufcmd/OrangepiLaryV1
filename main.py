@@ -221,36 +221,42 @@ def check_qr_mode_signal():
             # Sinyal dosyası varsa QR modu aktif
             if not qr_mode_active:
                 logger.info("QR modu sinyali algılandı - kamera ZORLA serbest bırakılıyor")
+                # ÖNEMLİ: Önce flag'i set et ki generate_frames kamerayı açmaya çalışmasın
                 qr_mode_active = True
+
                 # Kamerayı zorla serbest bırak
                 with camera_lock:
                     if camera is not None:
                         try:
                             # OpenCV kaynaklarını temizle
                             cv2.destroyAllWindows()
-                            time.sleep(0.2)
+                            time.sleep(0.1)
 
                             # Kamerayı kapat
                             if camera.isOpened():
                                 camera.release()
                             camera.release()  # İkinci kez dene
 
+                            # Referansı temizle
+                            camera = None
+
                             # OpenCV kaynaklarını tekrar temizle
                             cv2.destroyAllWindows()
+
+                            logger.info("✓ Kamera QR modu için ZORLA serbest bırakıldı")
                         except Exception as e:
                             logger.warning(f"Kamera release hatası: {e}")
-                        finally:
-                            camera = None
-                        logger.info("✓ Kamera QR modu için ZORLA serbest bırakıldı")
-                # Kameranın tamamen serbest kalması için daha uzun bekle
-                time.sleep(1.0)
+                            camera = None  # Her durumda None yap
+
+                # Kameranın tamamen serbest kalması için bekle
+                time.sleep(0.5)
             return True
         else:
             # Sinyal dosyası yoksa QR modu pasif
             if qr_mode_active:
                 logger.info("QR modu sinyali temizlendi - kamera yeniden başlatılıyor")
                 qr_mode_active = False
-                time.sleep(1.5)  # QR okuma modunun tamamen bitmesini bekle
+                time.sleep(1.0)  # QR okuma modunun tamamen bitmesini bekle
             return False
     except Exception as e:
         logger.error(f"QR modu sinyal kontrolü hatası: {e}")
@@ -264,7 +270,7 @@ def qr_signal_monitor_loop():
             check_qr_mode_signal()
         except Exception as e:
             logger.error(f"QR sinyal monitör hatası: {e}")
-        time.sleep(0.1)  # 100ms aralıklarla kontrol et (daha hızlı tepki)
+        time.sleep(0.05)  # 50ms aralıklarla kontrol et (daha hızlı tepki)
     logger.info("QR sinyal monitörü durdu")
 
 # ============================== Model & Auth ==============================
@@ -898,12 +904,23 @@ def reacquire_camera_after_qr():
         init_camera()
 
 def init_camera():
-    global camera
+    global camera, qr_mode_active
+
+    # QR modu aktifse kamerayı açma
+    if qr_mode_active:
+        logger.info("QR modu aktif - kamera açılmıyor")
+        return False
+
     if camera is not None and camera.isOpened():
         camera.release()
     camera = None
     for idx in range(3):
         try:
+            # Her denemeden önce QR modunu kontrol et
+            if qr_mode_active:
+                logger.info("QR modu aktif oldu - kamera açma iptal edildi")
+                return False
+
             cam = cv2.VideoCapture(idx)
             if cam.isOpened():
                 ok, frame = cam.read()
@@ -966,6 +983,14 @@ def generate_frames():
 
             # QR modu değilse normal işlem
             if camera is None or not camera.isOpened():
+                # QR modu aktifse kamerayı açmaya çalışma
+                if qr_mode_active:
+                    ph = create_placeholder("QR Kod Okunuyor...")
+                    _, buf = cv2.imencode(".jpg", ph)
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+                    eventlet.sleep(0.5)
+                    continue
+
                 now = time.time()
                 if now - connection_retry_timer >= 1:
                     connection_retry_timer = now

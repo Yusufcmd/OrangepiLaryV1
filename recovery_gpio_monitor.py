@@ -146,12 +146,12 @@ def wait_for_camera_release():
     logger.info("Kameranın serbest kalması bekleniyor...")
     start_time = time.time()
 
-    # İlk önce main uygulamanın kamerayı serbest bırakması için yeterince bekle
-    logger.debug("Ana uygulamanın kamerayı serbest bırakması için bekleniyor (5 saniye)...")
-    time.sleep(5)
+    # İlk önce main uygulamanın kamerayı serbest bırakması için bekle
+    logger.debug("Ana uygulamanın kamerayı serbest bırakması için bekleniyor (2 saniye)...")
+    time.sleep(2)
 
     attempts = 0
-    max_attempts = 30  # Daha fazla deneme (15 saniye)
+    max_attempts = 10  # Daha fazla deneme (15 saniye)
     elapsed = 0.0  # Başlangıç değeri
 
     while attempts < max_attempts:
@@ -162,7 +162,7 @@ def wait_for_camera_release():
         try:
             # OpenCV kaynaklarını temizle
             cv2.destroyAllWindows()
-            time.sleep(0.2)
+            time.sleep(0.1)
 
             test_cap = cv2.VideoCapture(CAMERA_INDEX)
             if test_cap.isOpened():
@@ -175,7 +175,7 @@ def wait_for_camera_release():
                 if ret and frame is not None:
                     logger.info(f"✓ Kamera serbest ve kullanılabilir (bekleme: {elapsed:.1f}s)")
                     # Kameranın tamamen serbest kalması için ek bekleme
-                    time.sleep(1)
+                    time.sleep(0.5)
                     return True
                 else:
                     logger.debug(f"Kamera açıldı ama frame okunamadı (deneme {attempts}/{max_attempts})")
@@ -186,7 +186,7 @@ def wait_for_camera_release():
         except Exception as e:
             logger.debug(f"Kamera test hatası: {e} (deneme {attempts}/{max_attempts})")
 
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     # Timeout oldu - kamerayı zorla serbest bırakmayı dene
     logger.warning(f"⚠ Kamera serbest kalma timeout ({elapsed:.1f}s, {attempts} deneme)")
