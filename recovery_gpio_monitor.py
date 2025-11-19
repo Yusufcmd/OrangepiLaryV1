@@ -181,7 +181,7 @@ def wait_for_camera_release():
                     logger.debug(f"Kamera açıldı ama frame okunamadı (deneme {attempts}/{max_attempts})")
             else:
                 test_cap.release()
-                cv2.destroy_allWindows()
+                cv2.destroyAllWindows()
                 logger.debug(f"Kamera açılamadı (deneme {attempts}/{max_attempts})")
         except Exception as e:
             logger.debug(f"Kamera test hatası: {e} (deneme {attempts}/{max_attempts})")
@@ -312,7 +312,7 @@ def wait_for_camera_release():
                     return True
             else:
                 test_cap.release()
-                cv2.destroy_allWindows()
+                cv2.destroyAllWindows()
         except Exception as e:
             logger.debug(f"Son kontrol hatası (deneme {final_attempt + 1}): {e}")
         time.sleep(1)
