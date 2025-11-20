@@ -244,16 +244,43 @@ def check_qr_mode_signal():
                     try:
                         os.remove(CAMERA_SIGNAL_FILE)
                         logger.info("✓ Eski sinyal dosyası temizlendi")
-                    except:
+                        qr_mode_active = False
+                        _last_qr_signal_time = 0
+                        return False
+                    except PermissionError:
+                        # sudo ile silmeyi dene
                         try:
-                            subprocess.run(['sudo', '-n', 'rm', '-f', CAMERA_SIGNAL_FILE],
-                                         check=False, stdin=subprocess.DEVNULL,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            logger.info("✓ Eski sinyal dosyası sudo ile temizlendi")
-                        except:
-                            pass
-                    qr_mode_active = False
-                    return False
+                            result = subprocess.run(
+                                ['sudo', '-n', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                                capture_output=True,
+                                text=True,
+                                timeout=5,
+                                stdin=subprocess.DEVNULL
+                            )
+                            if result.returncode == 0:
+                                logger.info("✓ Eski sinyal dosyası sudo ile temizlendi")
+                                qr_mode_active = False
+                                _last_qr_signal_time = 0
+                                return False
+                            else:
+                                # Sudo çalışmadı, bir sonraki iterasyonda tekrar dene
+                                # Sürekli log basmayı önlemek için sadece ilk denemede log
+                                if not hasattr(check_qr_mode_signal, '_warned_sudo_fail'):
+                                    logger.warning("Eski sinyal dosyası sudo ile silinemedi (sudo izni yok)")
+                                    check_qr_mode_signal._warned_sudo_fail = True
+                                qr_mode_active = False
+                                return False
+                        except subprocess.TimeoutExpired:
+                            # Timeout oldu, bir sonraki iterasyonda tekrar dene
+                            qr_mode_active = False
+                            return False
+                        except Exception:
+                            # Hata oldu ama devam et
+                            qr_mode_active = False
+                            return False
+                    except Exception:
+                        qr_mode_active = False
+                        return False
 
                 # Bu sinyal daha önce işlendi mi?
                 if signal_time <= _last_qr_signal_time:
@@ -282,13 +309,23 @@ def check_qr_mode_signal():
                 # Hatalı dosyayı temizle
                 try:
                     os.remove(CAMERA_SIGNAL_FILE)
-                except:
+                    qr_mode_active = False
+                    _last_qr_signal_time = 0
+                except PermissionError:
                     try:
-                        subprocess.run(['sudo', '-n', 'rm', '-f', CAMERA_SIGNAL_FILE],
-                                     check=False, stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(
+                            ['sudo', '-n', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                            stdin=subprocess.DEVNULL
+                        )
+                        qr_mode_active = False
+                        _last_qr_signal_time = 0
                     except:
                         pass
+                except:
+                    pass
                 return False
         else:
             # Sinyal dosyası yoksa QR modu pasif
@@ -385,27 +422,41 @@ def process_qr_scan():
     except Exception as e:
         logger.error(f"QR tarama işlemi hatası: {e}", exc_info=True)
     finally:
-        # QR modunu kapat
-        try:
-            if os.path.exists(CAMERA_SIGNAL_FILE):
-                try:
-                    os.remove(CAMERA_SIGNAL_FILE)
-                    logger.info("QR modu sinyali temizlendi")
-                except PermissionError:
-                    # İzin hatası varsa sudo ile sil
-                    try:
-                        import subprocess
-                        subprocess.run(['sudo', '-n', 'rm', '-f', CAMERA_SIGNAL_FILE],
-                                     check=False, stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        logger.info("QR modu sinyali sudo ile temizlendi")
-                    except Exception as se:
-                        logger.warning(f"Sinyal dosyası sudo ile silinemedi: {se}")
-        except Exception as e:
-            logger.warning(f"Sinyal dosyası temizleme hatası: {e}")
-
+        # QR modunu kapat ve sinyali temizle
+        global qr_mode_active, _last_qr_signal_time
         qr_mode_active = False
         qr_signal_monitor_loop._qr_processing = False
+        _last_qr_signal_time = 0  # Sinyal zamanını sıfırla
+
+        try:
+            if os.path.exists(CAMERA_SIGNAL_FILE):
+                # Önce normal silmeyi dene
+                try:
+                    os.remove(CAMERA_SIGNAL_FILE)
+                    logger.info("✓ QR modu sinyali temizlendi")
+                except PermissionError:
+                    # İzin hatası varsa sudo ile sil (NOPASSWD ile)
+                    try:
+                        result = subprocess.run(
+                            ['sudo', '-n', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                            stdin=subprocess.DEVNULL
+                        )
+                        if result.returncode == 0:
+                            logger.info("✓ QR modu sinyali sudo ile temizlendi")
+                        else:
+                            # Sudo başarısız ama devam et
+                            logger.warning(f"QR sinyali sudo ile silinemedi (izin sorunu), normal akış devam ediyor")
+                    except subprocess.TimeoutExpired:
+                        logger.warning("QR sinyali silme işlemi timeout, dosya sonraki iterasyonda temizlenecek")
+                    except Exception as se:
+                        logger.warning(f"QR sinyali sudo ile silinemedi: {se}")
+                except Exception as e:
+                    logger.warning(f"QR sinyal dosyası silme hatası: {e}")
+        except Exception as e:
+            logger.warning(f"QR sinyal dosyası temizleme hatası: {e}")
 
 def read_qr_from_camera_frames(timeout=60):
     """
@@ -557,106 +608,84 @@ def apply_wifi_config(config):
 
 def configure_sta_mode_via_script(ssid, password):
     """
-    STA mode script'ini dinamik olarak günceller ve çalıştırır.
-    wifi_change.py kodundaki gibi çalışır.
+    STA mode'a geçer.
+    wifi_change.py'deki _sta_script_content fonksiyonunu kullanır.
     """
     try:
-        # script.txt'i oku
-        script_file = os.path.join(BASE_DIR, "script.txt")
-        if not os.path.exists(script_file):
-            logger.error(f"script.txt bulunamadı: {script_file}")
+        # wifi_change modülünü import et
+        import wifi_change
+
+        logger.info(f"STA mode yapılandırması başlatılıyor: SSID={ssid}")
+
+        # STA script içeriğini oluştur
+        script_content = wifi_change._sta_script_content(ssid, password)
+
+        # Script'i /opt/lscope/bin/sta_mode.sh konumuna yaz
+        sta_script_path = "/opt/lscope/bin/sta_mode.sh"
+
+        # Önce geçici dosyaya yaz
+        temp_script = "/tmp/sta_mode_temp.sh"
+        try:
+            with open(temp_script, 'w', encoding='utf-8') as f:
+                f.write(script_content)
+
+            # chmod +x yap
+            os.chmod(temp_script, 0o755)
+
+            # sudo ile hedef konuma kopyala
+            copy_result = subprocess.run(
+                ["sudo", "-n", "cp", temp_script, sta_script_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL
+            )
+
+            if copy_result.returncode != 0:
+                logger.error(f"sta_mode.sh kopyalanamadı: {copy_result.stderr}")
+                return False
+
+            # chmod +x yap (hedef dosyada)
+            subprocess.run(["sudo", "-n", "chmod", "+x", sta_script_path],
+                         capture_output=True, stdin=subprocess.DEVNULL, timeout=5)
+
+            logger.info(f"✓ sta_mode.sh güncellendi: {sta_script_path}")
+
+        except Exception as e:
+            logger.error(f"sta_mode.sh yazma hatası: {e}")
             return False
 
-        with open(script_file, 'r', encoding='utf-8') as f:
-            script_content = f.read()
-
-        # SSID ve PSK değerlerini değiştir
-        import re
-
-        # STA_MODE bölümündeki SSID ve PSK'yi değiştir
-        script_content = re.sub(
-            r'(# --- STA MODE ---.*?SSID=")[^"]*(")',
-            rf'\1{ssid}\2',
-            script_content,
-            flags=re.DOTALL
-        )
-
-        script_content = re.sub(
-            r'(# --- STA MODE ---.*?PSK=")[^"]*(")',
-            rf'\1{password}\2',
-            script_content,
-            flags=re.DOTALL
-        )
-
-        # Güncellenmiş script'i geçici dosyaya yaz
-        temp_script = "/tmp/sta_mode_update.sh"
-        with open(temp_script, 'w', encoding='utf-8') as f:
-            f.write(script_content)
-
         # Script'i çalıştır
-        logger.info("STA mode script'i çalıştırılıyor...")
+        logger.info("sta_mode.sh çalıştırılıyor...")
         result = subprocess.run(
-            ["sudo", "-n", "bash", temp_script],
+            ["sudo", "-n", "bash", sta_script_path],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=90,
             stdin=subprocess.DEVNULL
         )
 
-        # NoNewPrivileges hatası varsa, doğrudan script çalıştır
+        # NoNewPrivileges hatası kontrolü
         if result.returncode != 0 and "no new privileges" in result.stderr.lower():
             logger.warning("sudo NoNewPrivileges hatası, doğrudan script çalıştırılıyor...")
             result = subprocess.run(
-                ["bash", temp_script],
+                ["bash", sta_script_path],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=90
             )
 
-        if result.returncode == 0:
-            logger.info("✓ STA mode script başarıyla tamamlandı")
+        # Log hatalarını filtrele
+        stderr_filtered = result.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
 
-            # STA mode script'ini çalıştır
-            sta_script = "/opt/lscope/bin/sta_mode.sh"
-            if os.path.exists(sta_script):
-                logger.info("sta_mode.sh çalıştırılıyor...")
-                result2 = subprocess.run(
-                    ["sudo", "-n", "bash", sta_script],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    stdin=subprocess.DEVNULL
-                )
-
-                # NoNewPrivileges hatası varsa, doğrudan script çalıştır
-                if result2.returncode != 0 and "no new privileges" in result2.stderr.lower():
-                    logger.warning("sudo NoNewPrivileges hatası, doğrudan script çalıştırılıyor...")
-                    result2 = subprocess.run(
-                        ["bash", sta_script],
-                        capture_output=True,
-                        text=True,
-                        timeout=60
-                    )
-
-                # Log dosyası erişim hatalarını ignore et
-                stderr_filtered = result2.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
-
-                if result2.returncode == 0 or "sta_mode OK" in result2.stdout:
-                    logger.info(f"✓ WiFi STA moduna geçildi: {ssid}")
-                    return True
-                else:
-                    if stderr_filtered:
-                        logger.error(f"sta_mode.sh hatası: {stderr_filtered}")
-                    else:
-                        logger.warning("sta_mode.sh tamamlandı ama log hatası oluştu")
-                    return False
-            else:
-                logger.error(f"sta_mode.sh bulunamadı: {sta_script}")
-                return False
+        if result.returncode == 0 or "sta_mode OK" in result.stdout:
+            logger.info(f"✓ WiFi STA moduna geçildi: {ssid}")
+            return True
         else:
-            stderr_filtered = result.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
             if stderr_filtered:
-                logger.error(f"Script güncelleme hatası: {stderr_filtered}")
+                logger.error(f"sta_mode.sh hatası: {stderr_filtered}")
+            else:
+                logger.warning("sta_mode.sh tamamlandı ama log hatası oluştu")
             return False
 
     except Exception as e:
@@ -666,58 +695,45 @@ def configure_sta_mode_via_script(ssid, password):
 def configure_ap_mode_via_script(band, hw_mode, channel):
     """
     AP mode'a geçer.
-    Önce hostapd.conf'u günceller, sonra ap_mode.sh script'ini çalıştırır.
-    wifi_change.py kodundaki gibi çalışır.
+    wifi_change.py'deki fonksiyonları kullanarak hostapd.conf'u günceller ve ap_mode.sh çalıştırır.
     """
     try:
-        # 1. hostapd.conf dosyasını güncelle (wifi_change.py'deki gibi)
-        hostapd_conf = "/etc/hostapd/hostapd.conf"
+        # wifi_change modülünü import et
+        import wifi_change
 
-        if not os.path.exists(hostapd_conf):
-            logger.error(f"hostapd.conf bulunamadı: {hostapd_conf}")
+        logger.info(f"AP Mode yapılandırması başlatılıyor: {band}GHz, kanal {channel}, hw_mode={hw_mode}")
+
+        # 1. hostapd.conf'u güncelle (wifi_change.py fonksiyonunu kullan)
+        success, message = wifi_change.write_ap_band_channel(band, channel)
+
+        if not success:
+            logger.error(f"hostapd.conf güncellenemedi: {message}")
             return False
 
-        logger.info(f"AP Mode yapılandırması: {band}GHz band, kanal {channel}, hw_mode={hw_mode}")
+        logger.info(f"✓ {message}")
 
-        # hostapd.conf'u oku
+        # 2. Mevcut AP SSID ve password'ü oku
+        ap_ssid = wifi_change.read_ap_ssid() or "OrangePiAP"
+        ap_password = wifi_change.read_ap_password() or "simclever123"
+
+        # 3. AP script içeriğini oluştur
+        script_content = wifi_change._ap_script_content(ap_ssid, ap_password, iface="wlan0")
+
+        # 4. Script'i /opt/lscope/bin/ap_mode.sh konumuna yaz
+        ap_script_path = "/opt/lscope/bin/ap_mode.sh"
+
+        # Önce geçici dosyaya yaz
+        temp_script = "/tmp/ap_mode_temp.sh"
         try:
-            with open(hostapd_conf, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        except Exception as e:
-            logger.error(f"hostapd.conf okunamadı: {e}")
-            return False
+            with open(temp_script, 'w', encoding='utf-8') as f:
+                f.write(script_content)
 
-        # hw_mode ve channel'ı güncelle
-        updated_lines = []
-        saw_mode = False
-        saw_chan = False
+            # chmod +x yap
+            os.chmod(temp_script, 0o755)
 
-        for line in lines:
-            ls = line.strip()
-            if ls.startswith("hw_mode="):
-                updated_lines.append(f"hw_mode={hw_mode}\n")
-                saw_mode = True
-            elif ls.startswith("channel="):
-                updated_lines.append(f"channel={channel}\n")
-                saw_chan = True
-            else:
-                updated_lines.append(line)
-
-        # Eğer yoksa ekle
-        if not saw_mode:
-            updated_lines.append(f"hw_mode={hw_mode}\n")
-        if not saw_chan:
-            updated_lines.append(f"channel={channel}\n")
-
-        # Geçici dosyaya yaz
-        temp_conf = "/tmp/hostapd_update.conf"
-        try:
-            with open(temp_conf, 'w', encoding='utf-8') as f:
-                f.writelines(updated_lines)
-
-            # sudo ile kopyala
+            # sudo ile hedef konuma kopyala
             copy_result = subprocess.run(
-                ["sudo", "-n", "cp", temp_conf, hostapd_conf],
+                ["sudo", "-n", "cp", temp_script, ap_script_path],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -725,50 +741,40 @@ def configure_ap_mode_via_script(band, hw_mode, channel):
             )
 
             if copy_result.returncode != 0:
-                logger.error(f"hostapd.conf güncellenemedi: {copy_result.stderr}")
+                logger.error(f"ap_mode.sh kopyalanamadı: {copy_result.stderr}")
                 return False
 
-            logger.info(f"✓ hostapd.conf güncellendi: hw_mode={hw_mode}, channel={channel}")
+            # chmod +x yap (hedef dosyada)
+            subprocess.run(["sudo", "-n", "chmod", "+x", ap_script_path],
+                         capture_output=True, stdin=subprocess.DEVNULL, timeout=5)
 
-            # Geçici dosyayı sil
-            try:
-                os.remove(temp_conf)
-            except:
-                pass
+            logger.info(f"✓ ap_mode.sh güncellendi: {ap_script_path}")
 
         except Exception as e:
-            logger.error(f"hostapd.conf güncelleme hatası: {e}")
+            logger.error(f"ap_mode.sh yazma hatası: {e}")
             return False
 
-        # 2. AP mode script'ini çalıştır
-        ap_script = "/opt/lscope/bin/ap_mode.sh"
-
-        if not os.path.exists(ap_script):
-            logger.error(f"ap_mode.sh bulunamadı: {ap_script}")
-            return False
-
+        # 5. Script'i çalıştır
         logger.info("ap_mode.sh çalıştırılıyor...")
-
-        # sudo -n ile çalıştır (parola sormadan)
         result = subprocess.run(
-            ["sudo", "-n", "bash", ap_script],
+            ["sudo", "-n", "bash", ap_script_path],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=90,
             stdin=subprocess.DEVNULL
         )
 
-        # NoNewPrivileges hatası varsa, doğrudan script çalıştır (zaten root iznine sahipse)
+        # NoNewPrivileges hatası kontrolü
         if result.returncode != 0 and "no new privileges" in result.stderr.lower():
             logger.warning("sudo NoNewPrivileges hatası, doğrudan script çalıştırılıyor...")
             result = subprocess.run(
-                ["bash", ap_script],
+                ["bash", ap_script_path],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=90
             )
 
-        # Log dosyası erişim hatalarını ignore et, sadece kritik hataları kontrol et
+        # Log hatalarını filtrele
         stderr_filtered = result.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
 
         if result.returncode == 0 or "ap_mode OK" in result.stdout:
