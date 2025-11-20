@@ -333,7 +333,7 @@ def background_camera_updater():
 
 def check_qr_mode_signal():
     """QR modu sinyalini kontrol et - sadece YENİ sinyalleri kabul et"""
-    global qr_mode_active, _last_qr_signal_time
+    global qr_mode_active, _last_qr_signal_time, _background_camera_thread_started
     try:
         # Sinyal dosyasının varlığını kontrol et
         signal_exists = os.path.exists(CAMERA_SIGNAL_FILE)
@@ -413,7 +413,6 @@ def check_qr_mode_signal():
                     qr_mode_active = True
 
                     # Arka plan kamera thread'ini başlat (web arayüzü olmadan da çalışsın)
-                    global _background_camera_thread_started
                     if not _background_camera_thread_started:
                         try:
                             threading.Thread(target=background_camera_updater, daemon=True).start()
@@ -2632,7 +2631,6 @@ if __name__ == "__main__":
         ensure_default_user()
 
     # Arka plan kamera thread'ini başlat (QR okuma için gerekli)
-    global _background_camera_thread_started
     try:
         if not _background_camera_thread_started:
             threading.Thread(target=background_camera_updater, daemon=True).start()
