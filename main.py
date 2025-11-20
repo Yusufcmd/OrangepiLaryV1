@@ -219,31 +219,64 @@ shared_frame_file = "/home/rise/clary/clary_camera_frame.npy"  # Paylaşımlı d
 # NOT: /tmp yerine /var/run kullanıyoruz çünkü systemd PrivateTmp=true ile /tmp'yi izole ediyor
 CAMERA_SIGNAL_FILE = "/var/run/clary_qr_mode.signal"
 _qr_monitor_stop_evt = threading.Event()
+_last_qr_signal_time = 0  # Son QR sinyali zamanı
 
 def check_qr_mode_signal():
-    """QR modu sinyalini kontrol et"""
-    global qr_mode_active
+    """QR modu sinyalini kontrol et - sadece YENİ sinyalleri kabul et"""
+    global qr_mode_active, _last_qr_signal_time
     try:
         # Sinyal dosyasının varlığını kontrol et
         signal_exists = os.path.exists(CAMERA_SIGNAL_FILE)
 
         if signal_exists:
-            # Sinyal dosyası varsa QR modu aktif
-            if not qr_mode_active:
-                try:
-                    # Dosya içeriğini oku (debug için)
-                    with open(CAMERA_SIGNAL_FILE, 'r') as f:
-                        content = f.read()
-                    file_stat = os.stat(CAMERA_SIGNAL_FILE)
-                    logger.info("✓ QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
+            # Dosya içeriğini ve oluşturulma zamanını kontrol et
+            try:
+                with open(CAMERA_SIGNAL_FILE, 'r') as f:
+                    content = f.read().strip()
+
+                file_stat = os.stat(CAMERA_SIGNAL_FILE)
+                signal_time = file_stat.st_mtime  # Dosya değiştirilme zamanı
+
+                # Sinyal dosyası 60 saniyeden eski mi? (timeout kontrolü)
+                file_age = time.time() - signal_time
+                if file_age > 60:
+                    logger.warning(f"Eski QR sinyali tespit edildi ({file_age:.1f}s), temizleniyor...")
+                    try:
+                        os.remove(CAMERA_SIGNAL_FILE)
+                    except:
+                        subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                    qr_mode_active = False
+                    return False
+
+                # Bu sinyal daha önce işlendi mi?
+                if signal_time <= _last_qr_signal_time:
+                    # Eski sinyal, tekrar işleme
+                    return qr_mode_active
+
+                # YENİ sinyal tespit edildi!
+                if not qr_mode_active:
+                    logger.info("="*60)
+                    logger.info("✓ YENİ QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
+                    logger.info("="*60)
                     logger.debug(f"  Sinyal dosyası: {CAMERA_SIGNAL_FILE}")
                     logger.debug(f"  İçerik: {content[:100]}")
+                    logger.debug(f"  Dosya yaşı: {file_age:.1f}s")
                     logger.debug(f"  Dosya sahibi: uid={file_stat.st_uid}, gid={file_stat.st_gid}")
                     logger.debug(f"  İzinler: {oct(file_stat.st_mode)}")
-                except Exception as e:
-                    logger.warning(f"Sinyal dosyası okunamadı ama var: {e}")
-                qr_mode_active = True
-            return True
+
+                    _last_qr_signal_time = signal_time
+                    qr_mode_active = True
+
+                return True
+
+            except Exception as e:
+                logger.warning(f"Sinyal dosyası kontrol hatası: {e}")
+                # Hatalı dosyayı temizle
+                try:
+                    os.remove(CAMERA_SIGNAL_FILE)
+                except:
+                    subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                return False
         else:
             # Sinyal dosyası yoksa QR modu pasif
             if qr_mode_active:
@@ -261,6 +294,19 @@ def qr_signal_monitor_loop():
     # Thread başlarken QR modunun kapalı olduğundan emin ol
     qr_mode_active = False
     logger.info("QR sinyal monitörü başlatıldı - QR modu başlangıçta KAPALI")
+
+    # Eski sinyal dosyalarını temizle (yeniden başlatma durumunda)
+    try:
+        if os.path.exists(CAMERA_SIGNAL_FILE):
+            logger.warning("Başlangıçta eski QR sinyal dosyası bulundu, temizleniyor...")
+            try:
+                os.remove(CAMERA_SIGNAL_FILE)
+                logger.info("✓ Eski sinyal dosyası temizlendi")
+            except:
+                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                logger.info("✓ Eski sinyal dosyası sudo ile temizlendi")
+    except Exception as e:
+        logger.warning(f"Başlangıç sinyal temizleme hatası: {e}")
 
     while not _qr_monitor_stop_evt.is_set():
         try:
@@ -539,6 +585,16 @@ def configure_sta_mode_via_script(ssid, password):
             timeout=60
         )
 
+        # NoNewPrivileges hatası varsa, doğrudan script çalıştır
+        if result.returncode != 0 and "no new privileges" in result.stderr.lower():
+            logger.warning("sudo NoNewPrivileges hatası, doğrudan script çalıştırılıyor...")
+            result = subprocess.run(
+                ["bash", temp_script],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
         if result.returncode == 0:
             logger.info("✓ STA mode script başarıyla tamamlandı")
 
@@ -552,6 +608,16 @@ def configure_sta_mode_via_script(ssid, password):
                     text=True,
                     timeout=60
                 )
+
+                # NoNewPrivileges hatası varsa, doğrudan script çalıştır
+                if result2.returncode != 0 and "no new privileges" in result2.stderr.lower():
+                    logger.warning("sudo NoNewPrivileges hatası, doğrudan script çalıştırılıyor...")
+                    result2 = subprocess.run(
+                        ["bash", sta_script],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
 
                 if result2.returncode == 0:
                     logger.info(f"✓ WiFi STA moduna geçildi: {ssid}")
@@ -585,12 +651,23 @@ def configure_ap_mode_via_script(band, hw_mode, channel):
         logger.info(f"AP Mode geçişi: {band}GHz, kanal {channel}")
         logger.info("ap_mode.sh çalıştırılıyor...")
 
+        # Önce sudo ile dene
         result = subprocess.run(
             ["sudo", "bash", ap_script],
             capture_output=True,
             text=True,
             timeout=60
         )
+
+        # NoNewPrivileges hatası varsa, doğrudan script çalıştır (zaten root iznine sahipse)
+        if result.returncode != 0 and "no new privileges" in result.stderr.lower():
+            logger.warning("sudo NoNewPrivileges hatası, doğrudan script çalıştırılıyor...")
+            result = subprocess.run(
+                ["bash", ap_script],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
 
         if result.returncode == 0:
             logger.info(f"✓ WiFi AP moduna geçildi: {band}GHz, kanal {channel}")
