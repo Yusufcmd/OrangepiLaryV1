@@ -198,6 +198,11 @@ def _bash_quote(val: str) -> str:
     return "'" + s.replace("'", "'\"'\"'") + "'"
 
 
+def hostapd_conf_path() -> str:
+    """hostapd.conf dosya yolunu döndür."""
+    return "/etc/hostapd/hostapd.conf"
+
+
 def _sta_script_content(ssid: str, psk: str) -> str:
     # SSID ve PSK'yi bash için güvenli şekilde quote et
     ssid_quoted = _bash_quote(ssid)
@@ -370,6 +375,7 @@ nmcli con show --active 2>&1 | tee -a "$LOG" || true
 ip addr show wlan0 2>&1 | tee -a "$LOG" || true
 echo "========================================" | tee -a "$LOG"
 """
+    return tpl
 
 
 def read_ap_ssid() -> str:
@@ -451,6 +457,16 @@ def _run_script(script_path: str, timeout: int = 90) -> tuple[bool, str]:
         return True, out.strip()
     return False, (err or out)
 
+
+def read_ap_band_channel() -> tuple[str, int]:
+    """hostapd.conf'tan mevcut band (2.4/5) ve channel oku."""
+    path = hostapd_conf_path()
+    band = "2.4"
+    ch = 6
+
+    if not os.path.exists(path):
+        return band, ch
+
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
@@ -465,8 +481,12 @@ def _run_script(script_path: str, timeout: int = 90) -> tuple[bool, str]:
                         pass
     except Exception:
         pass
-    if band == "2.4" and ch not in CHANNELS_24: ch = 6
-    if band == "5"   and ch not in CHANNELS_5:  ch = 36
+
+    if band == "2.4" and ch not in CHANNELS_24:
+        ch = 6
+    if band == "5" and ch not in CHANNELS_5:
+        ch = 36
+
     return band, ch
 
 def read_ap_password() -> str:
