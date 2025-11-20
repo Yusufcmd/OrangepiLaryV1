@@ -221,6 +221,10 @@ CAMERA_SIGNAL_FILE = "/var/run/clary_qr_mode.signal"
 _qr_monitor_stop_evt = threading.Event()
 _last_qr_signal_time = 0  # Son QR sinyali zamanı
 
+# Arka plan kamera frame güncelleyici (QR modu için)
+_background_camera_thread = None
+_background_camera_stop = threading.Event()
+
 def check_qr_mode_signal():
     """QR modu sinyalini kontrol et - sadece YENİ sinyalleri kabul et"""
     global qr_mode_active, _last_qr_signal_time
@@ -301,6 +305,9 @@ def check_qr_mode_signal():
 
                     _last_qr_signal_time = signal_time
                     qr_mode_active = True
+
+                    # Arka plan kamera güncelleyiciyi başlat
+                    start_background_camera_updater()
 
                 return True
 
@@ -1471,6 +1478,131 @@ def create_placeholder(text):
     cv2.putText(img, text, (x, y), font, 1, (255,255,255), 2)
     return img
 
+def background_camera_updater():
+    """
+    QR modu için arka planda kamera frame'lerini sürekli güncelleyen thread.
+    Web arayüzü açılmasa bile QR okuma çalışır.
+    """
+    global camera, shared_camera_frame, shared_frame_lock, shared_frame_timestamp, shared_frame_file
+    global qr_mode_active, _background_camera_stop
+
+    logger.info("Arka plan kamera güncelleyici başlatıldı")
+    connection_retry_timer = 0
+    frame_count = 0
+    last_camera_init_attempt = 0
+
+    while not _background_camera_stop.is_set():
+        try:
+            # QR modu aktif değilse bekle
+            if not qr_mode_active:
+                time.sleep(0.2)
+                continue
+
+            # Kamera yoksa veya açık değilse, başlat
+            if camera is None or not camera.isOpened():
+                now = time.time()
+                # 1 saniyede bir deneme yap
+                if now - last_camera_init_attempt >= 1:
+                    last_camera_init_attempt = now
+                    with camera_lock:
+                        if qr_mode_active:  # Yine kontrol et
+                            # Kamera yoksa başlat
+                            if camera is None or not camera.isOpened():
+                                logger.info("Arka plan thread: Kamera başlatılıyor...")
+                                for idx in range(3):
+                                    try:
+                                        cam = cv2.VideoCapture(idx)
+                                        if cam.isOpened():
+                                            ok, frame = cam.read()
+                                            if ok and frame is not None and frame.size > 0:
+                                                cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                                                camera = cam
+                                                logger.info(f"Arka plan thread: Kamera {idx} bağlandı")
+                                                break
+                                            cam.release()
+                                    except Exception as e:
+                                        logger.error(f"Arka plan thread: Kamera {idx} açma hatası: {e}")
+
+                # Hala kamera yoksa bekle ve devam et
+                if camera is None or not camera.isOpened():
+                    time.sleep(0.1)
+                    continue
+
+            # Kamera frame'i oku
+            ok, frame = camera.read()
+
+            if not ok or frame is None:
+                logger.warning("Arka plan thread: Kamera frame okunamadı, kamera kapatılıyor")
+                if camera is not None:
+                    try:
+                        camera.release()
+                    except:
+                        pass
+                camera = None
+                time.sleep(0.1)
+                continue
+
+            # Frame'i paylaşımlı değişkene kaydet
+            frame_count += 1
+            now = time.time()
+
+            with shared_frame_lock:
+                shared_camera_frame = frame.copy()
+                shared_frame_timestamp = now
+
+                # Her 3 karede bir dosyaya da yaz
+                if frame_count % 3 == 0:
+                    try:
+                        np.save(shared_frame_file, frame)
+                        # İlk 3 başarılı yazımda log göster
+                        if frame_count <= 9:
+                            logger.info(f"✓ Arka plan thread: Paylaşımlı kare dosyasına yazıldı (kare #{frame_count})")
+                    except Exception as save_err:
+                        logger.warning(f"Arka plan thread: Paylaşımlı kare kaydetme hatası: {save_err}")
+
+            # recordsVideo'ya frame gönder
+            try:
+                if 'recordsVideo' in globals():
+                    recordsVideo.push_frame(frame)
+            except Exception as _e:
+                pass
+
+            # ~18 fps
+            time.sleep(0.055)
+
+        except Exception as e:
+            logger.error(f"Arka plan kamera güncelleyici hatası: {e}", exc_info=True)
+            if camera is not None:
+                try:
+                    camera.release()
+                except:
+                    pass
+            camera = None
+            time.sleep(1)
+
+    logger.info("Arka plan kamera güncelleyici durduruldu")
+
+    # Thread sonlandığında kamerayı temizle
+    if camera is not None:
+        try:
+            camera.release()
+        except:
+            pass
+        camera = None
+
+def start_background_camera_updater():
+    """Arka plan kamera güncelleyiciyi başlat"""
+    global _background_camera_thread, _background_camera_stop
+
+    if _background_camera_thread is not None and _background_camera_thread.is_alive():
+        logger.info("Arka plan kamera güncelleyici zaten çalışıyor")
+        return
+
+    _background_camera_stop.clear()
+    _background_camera_thread = threading.Thread(target=background_camera_updater, daemon=True, name="BackgroundCameraUpdater")
+    _background_camera_thread.start()
+    logger.info("✓ Arka plan kamera güncelleyici thread başlatıldı")
+
 def arkaplan_isi():
     logger.info("Arka plan batarya veri yayını başladı.")
     tmp = 0; error_count = 0; max_errors = 5
@@ -1494,8 +1626,22 @@ def generate_frames():
 
     while True:
         try:
+            # QR modu aktifse, arka plan thread kamerayı yönetir
+            # Bu fonksiyon sadece paylaşımlı frame'i gösterir
+            if qr_mode_active:
+                with shared_frame_lock:
+                    if shared_camera_frame is not None:
+                        frame = shared_camera_frame.copy()
+                        ph = create_placeholder("QR Kod Okunuyor...")
+                        _, buf = cv2.imencode(".jpg", ph, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                    else:
+                        ph = create_placeholder("QR modu - kamera başlatılıyor...")
+                        _, buf = cv2.imencode(".jpg", ph)
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+                eventlet.sleep(0.055)
+                continue
 
-            # Normal işlem
+            # Normal işlem (QR modu değilse)
             if camera is None or not camera.isOpened():
                 now = time.time()
                 if now - connection_retry_timer >= 1:
@@ -1530,33 +1676,11 @@ def generate_frames():
             except Exception as _e:
                 logger.error(f"recordsVideo.push_frame hatası: {_e}")
 
-            # Paylaşımlı kareyi güncelle (QR okuma için) - SADECE QR MODU AKTİFSE
-            frame_count += 1
-            if qr_mode_active:
-                with shared_frame_lock:
-                    shared_camera_frame = frame.copy()
-                    shared_frame_timestamp = now
-
-                    # Dosyaya da yaz (recovery_gpio_monitor.py için)
-                    # Her 3 karede bir yaz (performans için)
-                    if frame_count % 3 == 0:
-                        try:
-                            np.save(shared_frame_file, frame)
-                            # İlk 3 başarılı yazımda log göster
-                            if frame_count <= 9:
-                                logger.info(f"✓ Paylaşımlı kare dosyasına yazıldı: {shared_frame_file} (kare #{frame_count})")
-                        except Exception as save_err:
-                            logger.warning(f"Paylaşımlı kare kaydetme hatası: {save_err}")
-
             ever_connected = True; error_count = 0
             last_ok = frame.copy(); last_ts = now
 
-            # QR okuma modu aktifse stream'e placeholder göster, aksi halde normal kare göster
-            if qr_mode_active:
-                ph = create_placeholder("QR Kod Okunuyor...")
-                _, buf = cv2.imencode(".jpg", ph, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            else:
-                _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            # Normal frame göster
+            _, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
 
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
 
@@ -2489,6 +2613,9 @@ if __name__ == "__main__":
         init_camera()
         socketio.start_background_task(arkaplan_isi)
 
+        # Arka plan kamera güncelleyiciyi başlat (QR modu için)
+        start_background_camera_updater()
+
         if USE_GPIOD and BATT_PWM_LINE:
             threading.Thread(target=gpio_batt_reader_pwm_gpiod, daemon=True).start()
         else:
@@ -2540,6 +2667,14 @@ if __name__ == "__main__":
     finally:
         _batt_stop_evt.set()
         _shutdown_stop_evt.set()
+        _qr_monitor_stop_evt.set()
+
+        # Arka plan kamera thread'ini durdur
+        _background_camera_stop.set()
+        if _background_camera_thread is not None and _background_camera_thread.is_alive():
+            logger.info("Arka plan kamera thread'i durduruluyor...")
+            _background_camera_thread.join(timeout=2)
+
         # Kayıt modülü servislerini durdur
         try:
             if 'recordsVideo' in globals():
