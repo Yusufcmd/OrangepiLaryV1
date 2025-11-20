@@ -715,7 +715,7 @@ def main():
     logger.info("İzleme başladı. Çıkmak için Ctrl+C...")
 
     last_trigger_time = 0
-    TRIGGER_COOLDOWN = 30  # 30 saniye soğuma süresi (genel)
+    TRIGGER_COOLDOWN = 10  # 10 saniye soğuma süresi (genel)
 
     # %50 duty için ayrı cooldown
     last_ap7_trigger_time = 0
