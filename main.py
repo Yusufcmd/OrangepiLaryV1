@@ -2632,8 +2632,8 @@ if __name__ == "__main__":
         ensure_default_user()
 
     # Arka plan kamera thread'ini başlat (QR okuma için gerekli)
+    global _background_camera_thread_started
     try:
-        global _background_camera_thread_started
         if not _background_camera_thread_started:
             threading.Thread(target=background_camera_updater, daemon=True).start()
             _background_camera_thread_started = True
