@@ -51,10 +51,28 @@ cat > "$SUDOERS_FILE" << EOF
 # Web uygulamasının wifi scriptlerini ve sistem komutlarını çalıştırabilmesi için
 
 # Kullanıcı: $WEB_USER
+
+# Temel sistem komutları
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/install
 $WEB_USER ALL=(root) NOPASSWD: /bin/install
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/tee
 $WEB_USER ALL=(root) NOPASSWD: /bin/tee
+$WEB_USER ALL=(root) NOPASSWD: /bin/cp
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/cp
+$WEB_USER ALL=(root) NOPASSWD: /bin/chmod
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/chmod
+$WEB_USER ALL=(root) NOPASSWD: /bin/chown
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/chown
+$WEB_USER ALL=(root) NOPASSWD: /bin/mkdir
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/mkdir
+$WEB_USER ALL=(root) NOPASSWD: /bin/rm
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/rm
+$WEB_USER ALL=(root) NOPASSWD: /bin/ln
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/ln
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/true
+$WEB_USER ALL=(root) NOPASSWD: /bin/true
+
+# systemctl komutları
 $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * NetworkManager*
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl * NetworkManager*
 $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * hostapd*
@@ -65,12 +83,18 @@ $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl * wlan0-static*
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl * wlan0-static*
 $WEB_USER ALL=(root) NOPASSWD: /bin/systemctl daemon-reload
 $WEB_USER ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload
+
+# WiFi scriptleri
 $WEB_USER ALL=(root) NOPASSWD: /opt/lscope/bin/sta_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /opt/lscope/bin/ap_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /opt/lscope/bin/ap7_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /usr/local/sbin/sta_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /usr/local/sbin/ap_mode.sh
 $WEB_USER ALL=(root) NOPASSWD: /usr/local/sbin/ap7_mode.sh
+$WEB_USER ALL=(root) NOPASSWD: /bin/bash /opt/lscope/bin/*
+$WEB_USER ALL=(root) NOPASSWD: /usr/bin/bash /opt/lscope/bin/*
+$WEB_USER ALL=(root) NOPASSWD: /tmp/sta_mode_temp.sh
+$WEB_USER ALL=(root) NOPASSWD: /tmp/ap_mode_temp.sh
 EOF
 
 # Dosya izinlerini ayarla (440 - sadece root okuyabilir)
