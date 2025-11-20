@@ -378,7 +378,7 @@ def qr_signal_monitor_loop():
 
 def process_qr_scan():
     """QR kod tarama işlemini yürütür"""
-    global qr_mode_active
+    global qr_mode_active, _last_qr_signal_time
 
     # QR modu aktif değilse işlemi başlatma
     if not qr_mode_active:
@@ -423,7 +423,6 @@ def process_qr_scan():
         logger.error(f"QR tarama işlemi hatası: {e}", exc_info=True)
     finally:
         # QR modunu kapat ve sinyali temizle
-        global qr_mode_active, _last_qr_signal_time
         qr_mode_active = False
         qr_signal_monitor_loop._qr_processing = False
         _last_qr_signal_time = 0  # Sinyal zamanını sıfırla
