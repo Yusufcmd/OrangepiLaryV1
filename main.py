@@ -216,7 +216,8 @@ shared_frame_timestamp = 0
 shared_frame_file = "/home/rise/clary/clary_camera_frame.npy"  # Paylaşımlı dosya yolu
 
 # QR modu sinyal dosyası
-CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
+# NOT: /tmp yerine /var/run kullanıyoruz çünkü systemd PrivateTmp=true ile /tmp'yi izole ediyor
+CAMERA_SIGNAL_FILE = "/var/run/clary_qr_mode.signal"
 _qr_monitor_stop_evt = threading.Event()
 
 def check_qr_mode_signal():
@@ -229,7 +230,18 @@ def check_qr_mode_signal():
         if signal_exists:
             # Sinyal dosyası varsa QR modu aktif
             if not qr_mode_active:
-                logger.info("✓ QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
+                try:
+                    # Dosya içeriğini oku (debug için)
+                    with open(CAMERA_SIGNAL_FILE, 'r') as f:
+                        content = f.read()
+                    file_stat = os.stat(CAMERA_SIGNAL_FILE)
+                    logger.info("✓ QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
+                    logger.debug(f"  Sinyal dosyası: {CAMERA_SIGNAL_FILE}")
+                    logger.debug(f"  İçerik: {content[:100]}")
+                    logger.debug(f"  Dosya sahibi: uid={file_stat.st_uid}, gid={file_stat.st_gid}")
+                    logger.debug(f"  İzinler: {oct(file_stat.st_mode)}")
+                except Exception as e:
+                    logger.warning(f"Sinyal dosyası okunamadı ama var: {e}")
                 qr_mode_active = True
             return True
         else:
@@ -239,7 +251,7 @@ def check_qr_mode_signal():
                 qr_mode_active = False
             return False
     except Exception as e:
-        logger.error(f"QR modu sinyal kontrolü hatası: {e}")
+        logger.error(f"QR modu sinyal kontrolü hatası: {e}", exc_info=True)
         return qr_mode_active
 
 def qr_signal_monitor_loop():

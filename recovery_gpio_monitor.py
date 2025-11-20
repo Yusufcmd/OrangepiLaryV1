@@ -30,7 +30,8 @@ except ImportError as e:
     cv2 = None
 
 # Kamera kontrol sinyali için dosya yolu
-CAMERA_SIGNAL_FILE = "/tmp/clary_qr_mode.signal"
+# NOT: /tmp yerine /var/run kullanıyoruz çünkü systemd PrivateTmp=true ile /tmp'yi izole ediyor
+CAMERA_SIGNAL_FILE = "/var/run/clary_qr_mode.signal"
 CAMERA_RELEASE_TIMEOUT = 10  # Kameranın serbest kalması için max bekleme süresi (saniye) - arttırıldı
 
 # ==================== LOGLAMA YAPILANDIRMA ====================
@@ -125,25 +126,43 @@ def signal_qr_mode_start():
         if os.path.exists(CAMERA_SIGNAL_FILE):
             try:
                 os.remove(CAMERA_SIGNAL_FILE)
-            except PermissionError:
+                logger.debug(f"Eski sinyal dosyası silindi: {CAMERA_SIGNAL_FILE}")
+            except PermissionError as e:
+                logger.warning(f"Sinyal dosyası silinemedi (izin hatası): {e}")
                 # İzin hatası varsa sudo ile sil
                 import subprocess
                 subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
 
         # Yeni sinyal dosyası oluştur
-        with open(CAMERA_SIGNAL_FILE, 'w') as f:
-            f.write(f"{time.time()}\nQR_MODE_ACTIVE")
+        try:
+            with open(CAMERA_SIGNAL_FILE, 'w') as f:
+                f.write(f"{time.time()}\nQR_MODE_ACTIVE\npid={os.getpid()}\n")
+            logger.debug(f"Sinyal dosyası oluşturuldu: {CAMERA_SIGNAL_FILE}")
+        except PermissionError as e:
+            logger.error(f"Sinyal dosyası oluşturulamadı (izin hatası): {e}")
+            logger.error(f"  Hedef: {CAMERA_SIGNAL_FILE}")
+            logger.error(f"  Kullanıcı: {os.getuid()}, Grup: {os.getgid()}")
+            return False
 
         # Dosya izinlerini ayarla (herkes okuyup silebilsin)
         try:
             os.chmod(CAMERA_SIGNAL_FILE, 0o666)
-        except:
-            pass
+            logger.debug(f"Dosya izinleri ayarlandı: 0o666")
+        except Exception as e:
+            logger.warning(f"Dosya izinleri ayarlanamadı: {e}")
 
-        logger.info(f"✓ QR modu sinyali gönderildi: {CAMERA_SIGNAL_FILE}")
-        return True
+        # Dosyanın gerçekten oluşturulduğunu doğrula
+        if os.path.exists(CAMERA_SIGNAL_FILE):
+            file_stat = os.stat(CAMERA_SIGNAL_FILE)
+            logger.info(f"✓ QR modu sinyali gönderildi: {CAMERA_SIGNAL_FILE}")
+            logger.info(f"  Dosya sahibi: uid={file_stat.st_uid}, gid={file_stat.st_gid}, izinler={oct(file_stat.st_mode)}")
+            return True
+        else:
+            logger.error(f"✗ Sinyal dosyası oluşturulamadı: {CAMERA_SIGNAL_FILE}")
+            return False
+
     except Exception as e:
-        logger.warning(f"QR modu sinyali gönderilemedi: {e}")
+        logger.error(f"QR modu sinyali gönderilemedi: {e}", exc_info=True)
         return False
 
 def signal_qr_mode_end():
