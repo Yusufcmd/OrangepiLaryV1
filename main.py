@@ -227,23 +227,31 @@ def background_camera_updater():
     Arka planda sürekli çalışan kamera thread'i.
     Web arayüzü açık olmasa bile kamerayı çalıştırır ve shared_camera_frame'i günceller.
     Hem QR okuma hem de web stream için kullanılır.
+    QR modu aktifken de kesintisiz çalışmaya devam eder.
     """
     global camera, shared_camera_frame, shared_frame_timestamp, qr_mode_active
 
-    logger.info("Arka plan kamera thread'i başlatıldı")
+    logger.info("Arka plan kamera thread'i başlatıldı (QR modu desteği aktif)")
     connection_retry_timer = 0
     frame_count = 0
     last_log_time = 0
+    last_qr_status = False
 
     while True:
         try:
-            # Kamera yoksa veya kapalıysa aç
+            # QR modu durumu değiştiğinde logla
+            if qr_mode_active != last_qr_status:
+                status_text = "AÇILDI" if qr_mode_active else "KAPANDI"
+                logger.info(f"QR modu {status_text} - Arka plan kamera devam ediyor")
+                last_qr_status = qr_mode_active
+
+            # Kamera yoksa veya kapalıysa aç (QR modu kontrolü yok - her zaman çalış)
             if camera is None or not camera.isOpened():
                 now = time.time()
                 if now - connection_retry_timer >= 2:
                     connection_retry_timer = now
                     with camera_lock:
-                        # init_camera QR modunda çalışmaz, bu yüzden bypass edelim
+                        # Eski kamera varsa kapat
                         if camera is not None and camera.isOpened():
                             try:
                                 camera.release()
@@ -251,7 +259,7 @@ def background_camera_updater():
                                 pass
                             camera = None
 
-                        # Kamerayı aç
+                        # Kamerayı aç (QR modu kontrolü olmadan)
                         for idx in range(3):
                             try:
                                 cam = cv2.VideoCapture(idx)
@@ -260,11 +268,12 @@ def background_camera_updater():
                                     if ok and frame is not None and frame.size > 0:
                                         cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                                         camera = cam
-                                        logger.info(f"✓ Arka plan kamera açıldı (index: {idx})")
+                                        mode_info = " (QR modu için)" if qr_mode_active else ""
+                                        logger.info(f"✓ Arka plan kamera açıldı (index: {idx}){mode_info}")
                                         break
                                     cam.release()
                             except Exception as e:
-                                logger.error(f"Kamera {idx} açma hatası: {e}")
+                                logger.debug(f"Kamera {idx} açma denemesi başarısız: {e}")
 
                 if camera is None:
                     time.sleep(1)
@@ -282,29 +291,30 @@ def background_camera_updater():
                 frame_count += 1
                 now = time.time()
 
-                # Paylaşımlı frame'i güncelle (her zaman)
+                # Paylaşımlı frame'i güncelle (QR modu olsun olmasın her zaman)
                 with shared_frame_lock:
                     shared_camera_frame = frame.copy()
                     shared_frame_timestamp = now
 
-                # QR modu aktifse dosyaya da yaz
+                # QR modu aktifse dosyaya da yaz (her 3 frame'de bir)
                 if qr_mode_active and frame_count % 3 == 0:
                     try:
                         np.save(shared_frame_file, frame)
                     except Exception:
                         pass
 
-                # Kayıt modülüne frame gönder
-                try:
-                    if 'recordsVideo' in globals():
-                        recordsVideo.push_frame(frame)
-                except Exception:
-                    pass
+                # Kayıt modülüne frame gönder (QR modu dışında)
+                if not qr_mode_active:
+                    try:
+                        if 'recordsVideo' in globals():
+                            recordsVideo.push_frame(frame)
+                    except Exception:
+                        pass
 
-                # Her 10 saniyede bir log
-                if now - last_log_time > 10:
+                # Her 30 saniyede bir log (daha az spam)
+                if now - last_log_time > 30:
                     status = "QR MODU AKTIF" if qr_mode_active else "Normal"
-                    logger.debug(f"Arka plan kamera çalışıyor ({status}, frame: {frame_count})")
+                    logger.info(f"Arka plan kamera çalışıyor ({status}, frame: {frame_count})")
                     last_log_time = now
 
                 time.sleep(0.033)  # ~30 fps
@@ -401,6 +411,7 @@ def check_qr_mode_signal():
                 if not qr_mode_active:
                     logger.info("="*60)
                     logger.info("✓ YENİ QR modu sinyali algılandı - paylaşımlı kamera modu AÇIK")
+                    logger.info("  (SocketIO bağlantısı olmadan da çalışacak)")
                     logger.info("="*60)
                     logger.debug(f"  Sinyal dosyası: {CAMERA_SIGNAL_FILE}")
                     logger.debug(f"  İçerik: {content[:100]}")
@@ -417,9 +428,11 @@ def check_qr_mode_signal():
                         try:
                             threading.Thread(target=background_camera_updater, daemon=True).start()
                             _background_camera_thread_started = True
-                            logger.info("✓ Arka plan kamera thread'i başlatıldı")
+                            logger.info("✓ Arka plan kamera thread'i QR modu için başlatıldı")
                         except Exception as e:
                             logger.error(f"Arka plan kamera thread'i başlatılamadı: {e}")
+                    else:
+                        logger.info("✓ Arka plan kamera thread'i zaten çalışıyor - QR modu etkin")
 
                 return True
 
@@ -457,12 +470,15 @@ def check_qr_mode_signal():
         return qr_mode_active
 
 def qr_signal_monitor_loop():
-    """QR modu sinyal dosyasını sürekli izleyen thread"""
+    """
+    QR modu sinyal dosyasını sürekli izleyen thread.
+    SocketIO bağlantısı olmadan da çalışır - bağımsız QR okuma desteği.
+    """
     global qr_mode_active
 
     # Thread başlarken QR modunun kapalı olduğundan emin ol
     qr_mode_active = False
-    logger.info("QR sinyal monitörü başlatıldı - QR modu başlangıçta KAPALI")
+    logger.info("QR sinyal monitörü başlatıldı - SocketIO bağımsız mod (QR modu başlangıçta KAPALI)")
 
     # Eski sinyal dosyalarını temizle (yeniden başlatma durumunda)
     try:
@@ -486,8 +502,8 @@ def qr_signal_monitor_loop():
             # QR modu aktifse ve henüz işlem başlatılmamışsa
             if qr_mode_active and not getattr(qr_signal_monitor_loop, '_qr_processing', False):
                 qr_signal_monitor_loop._qr_processing = True
-                # QR okuma işlemini başlat
-                logger.info("QR modu aktif - QR tarama thread'i başlatılıyor")
+                # QR okuma işlemini başlat (SocketIO olmadan da çalışacak)
+                logger.info("QR modu aktif - QR tarama thread'i başlatılıyor (SocketIO bağımsız)")
                 threading.Thread(target=process_qr_scan, daemon=True).start()
 
         except Exception as e:
@@ -1595,8 +1611,18 @@ def arkaplan_isi():
     tmp = 0; error_count = 0; max_errors = 5
     while True:
         try:
-            if active_connections:
-                socketio.emit('adc_veri', {'deger': batt_value}, namespace='/adc')
+            # QR modu aktifse veya aktif bağlantı varsa emit yap
+            if active_connections or qr_mode_active:
+                try:
+                    socketio.emit('adc_veri', {'deger': batt_value}, namespace='/adc')
+                except Exception as emit_err:
+                    # SocketIO emit hatası varsa (bağlantı yokken), sadece devam et
+                    if qr_mode_active:
+                        # QR modu aktifken emit hatası normal, sessizce devam et
+                        pass
+                    else:
+                        # Bağlantı varken hata alınıyorsa logla
+                        logger.debug(f"SocketIO emit hatası: {emit_err}")
             time.sleep(0.2); tmp += 1
             error_count = 0
         except Exception as e:
