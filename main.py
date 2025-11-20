@@ -619,17 +619,25 @@ def configure_sta_mode_via_script(ssid, password):
                         timeout=60
                     )
 
-                if result2.returncode == 0:
+                # Log dosyası erişim hatalarını ignore et
+                stderr_filtered = result2.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
+
+                if result2.returncode == 0 or "sta_mode OK" in result2.stdout:
                     logger.info(f"✓ WiFi STA moduna geçildi: {ssid}")
                     return True
                 else:
-                    logger.error(f"sta_mode.sh hatası: {result2.stderr}")
+                    if stderr_filtered:
+                        logger.error(f"sta_mode.sh hatası: {stderr_filtered}")
+                    else:
+                        logger.warning("sta_mode.sh tamamlandı ama log hatası oluştu")
                     return False
             else:
                 logger.error(f"sta_mode.sh bulunamadı: {sta_script}")
                 return False
         else:
-            logger.error(f"Script güncelleme hatası: {result.stderr}")
+            stderr_filtered = result.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
+            if stderr_filtered:
+                logger.error(f"Script güncelleme hatası: {stderr_filtered}")
             return False
 
     except Exception as e:
@@ -669,11 +677,17 @@ def configure_ap_mode_via_script(band, hw_mode, channel):
                 timeout=60
             )
 
-        if result.returncode == 0:
+        # Log dosyası erişim hatalarını ignore et, sadde kritik hataları kontrol et
+        stderr_filtered = result.stderr.replace("tee: /var/log/wifi_mode.log: Erişim engellendi", "").strip()
+
+        if result.returncode == 0 or "ap_mode OK" in result.stdout:
             logger.info(f"✓ WiFi AP moduna geçildi: {band}GHz, kanal {channel}")
             return True
         else:
-            logger.error(f"ap_mode.sh hatası: {result.stderr}")
+            if stderr_filtered:
+                logger.error(f"ap_mode.sh hatası: {stderr_filtered}")
+            else:
+                logger.warning("ap_mode.sh tamamlandı ama log hatası oluştu")
             return False
 
     except Exception as e:
