@@ -131,7 +131,9 @@ def signal_qr_mode_start():
                 logger.warning(f"Sinyal dosyası silinemedi (izin hatası): {e}")
                 # İzin hatası varsa sudo ile sil
                 import subprocess
-                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                             check=False, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Yeni sinyal dosyası oluştur
         try:
@@ -174,7 +176,9 @@ def signal_qr_mode_end():
             except PermissionError:
                 # İzin hatası varsa sudo ile sil
                 import subprocess
-                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                             check=False, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         logger.info("✓ QR modu sinyali temizlendi")
         return True
     except Exception as e:
@@ -262,7 +266,9 @@ def wait_for_camera_release():
                     try:
                         logger.info(f"İşlem sonlandırılıyor: PID {pid}")
                         # sudo ile SIGTERM gönder
-                        subprocess.run(['sudo', 'kill', '-15', pid], timeout=2)
+                        subprocess.run(['sudo', 'kill', '-15', pid],
+                                     timeout=2, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception as e:
                         logger.warning(f"PID {pid} sonlandırılamadı: {e}")
 
@@ -539,7 +545,9 @@ def trigger_recovery():
 
             try:
                 logger.info("Reboot komutu çalıştırılıyor...")
-                subprocess.run(['sudo', 'reboot'], check=False)
+                subprocess.run(['sudo', 'reboot'],
+                             check=False, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 logger.info("✓ Reboot komutu gönderildi")
             except Exception as reboot_error:
                 logger.error(f"Reboot komutu hatası: {reboot_error}")
@@ -737,7 +745,9 @@ def main():
                                 logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → AP7 MODE tetikleniyor")
                                 try:
                                     # /opt noexec olsa bile çalışsın: bash ile çağır
-                                    res = subprocess.run(["sudo", "bash", AP7_MODE_SCRIPT], capture_output=True, text=True, timeout=45)
+                                    res = subprocess.run(["sudo", "bash", AP7_MODE_SCRIPT],
+                                                       capture_output=True, text=True, timeout=45,
+                                                       stdin=subprocess.DEVNULL)
                                     last_ap7_trigger_time = time.time()
                                     last_trigger_time = last_ap7_trigger_time  # genel cooldown'u da başlat
                                     if res.returncode == 0:

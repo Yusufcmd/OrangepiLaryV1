@@ -244,7 +244,9 @@ def check_qr_mode_signal():
                     try:
                         os.remove(CAMERA_SIGNAL_FILE)
                     except:
-                        subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                        subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                                     check=False, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     qr_mode_active = False
                     return False
 
@@ -275,7 +277,9 @@ def check_qr_mode_signal():
                 try:
                     os.remove(CAMERA_SIGNAL_FILE)
                 except:
-                    subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                    subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                                 check=False, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return False
         else:
             # Sinyal dosyası yoksa QR modu pasif
@@ -303,7 +307,9 @@ def qr_signal_monitor_loop():
                 os.remove(CAMERA_SIGNAL_FILE)
                 logger.info("✓ Eski sinyal dosyası temizlendi")
             except:
-                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                             check=False, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 logger.info("✓ Eski sinyal dosyası sudo ile temizlendi")
     except Exception as e:
         logger.warning(f"Başlangıç sinyal temizleme hatası: {e}")
@@ -380,7 +386,9 @@ def process_qr_scan():
                     # İzin hatası varsa sudo ile sil
                     try:
                         import subprocess
-                        subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                        subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                                     check=False, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         logger.info("QR modu sinyali sudo ile temizlendi")
                     except Exception as se:
                         logger.warning(f"Sinyal dosyası sudo ile silinemedi: {se}")
@@ -1592,7 +1600,9 @@ def _have_sudo_noninteractive() -> bool:
     if not _is_posix():
         return False
     try:
-        p = subprocess.run(["sudo", "-n", "true"], capture_output=True, text=True)
+        p = subprocess.run(["sudo", "-n", "true"],
+                         capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL)
         return p.returncode == 0
     except Exception:
         return False
@@ -2370,7 +2380,13 @@ if __name__ == "__main__":
                 # İzin hatası varsa sudo ile sil
                 try:
                     import subprocess
-                    subprocess.run(['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE], check=False)
+                    subprocess.run(
+                        ['sudo', 'rm', '-f', CAMERA_SIGNAL_FILE],
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
                     logger.info("QR modu sinyal dosyası sudo ile temizlendi")
                 except Exception as se:
                     logger.warning(f"Sinyal dosyası sudo ile silinemedi: {se}")
