@@ -220,6 +220,98 @@ shared_frame_file = "/home/rise/clary/clary_camera_frame.npy"  # Paylaşımlı d
 CAMERA_SIGNAL_FILE = "/var/run/clary_qr_mode.signal"
 _qr_monitor_stop_evt = threading.Event()
 _last_qr_signal_time = 0  # Son QR sinyali zamanı
+_qr_camera_thread_started = False  # QR kamera thread'inin başlatıldığını kontrol et
+
+def qr_camera_frame_updater():
+    """
+    QR modu için kamera frame'lerini güncelleyen thread.
+    Web arayüzü açık olmasa bile kamerayı açar ve shared_camera_frame'i günceller.
+    """
+    global shared_camera_frame, shared_frame_timestamp, qr_mode_active
+
+    logger.info("QR kamera frame güncelleyici başlatıldı")
+    qr_camera = None
+    last_log_time = 0
+
+    try:
+        while True:
+            try:
+                # QR modu aktif değilse bekle
+                if not qr_mode_active:
+                    # QR modu kapalıyken kamerayı kapat
+                    if qr_camera is not None:
+                        try:
+                            qr_camera.release()
+                            logger.info("QR kamera kapatıldı (QR modu pasif)")
+                        except:
+                            pass
+                        qr_camera = None
+                    time.sleep(0.5)
+                    continue
+
+                # Kamera açık değilse aç
+                if qr_camera is None or not qr_camera.isOpened():
+                    logger.info("QR modu için kamera açılıyor...")
+                    for idx in range(3):
+                        try:
+                            cam = cv2.VideoCapture(idx)
+                            if cam.isOpened():
+                                ok, frame = cam.read()
+                                if ok and frame is not None and frame.size > 0:
+                                    cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                                    qr_camera = cam
+                                    logger.info(f"✓ QR kamerası açıldı (index: {idx})")
+                                    break
+                                cam.release()
+                        except Exception as e:
+                            logger.error(f"QR kamera {idx} açma hatası: {e}")
+
+                    if qr_camera is None:
+                        logger.warning("QR kamerası açılamadı, 2 saniye sonra tekrar denenecek")
+                        time.sleep(2)
+                        continue
+
+                # Frame oku
+                ok, frame = qr_camera.read()
+
+                if ok and frame is not None:
+                    # Paylaşımlı frame'i güncelle
+                    with shared_frame_lock:
+                        shared_camera_frame = frame.copy()
+                        shared_frame_timestamp = time.time()
+
+                    # Her 5 saniyede bir log
+                    current_time = time.time()
+                    if current_time - last_log_time > 5:
+                        logger.debug(f"QR kamera frame güncellemesi devam ediyor (QR modu aktif)")
+                        last_log_time = current_time
+
+                    time.sleep(0.033)  # ~30 fps
+                else:
+                    # Frame okunamadı, kamerayı yeniden aç
+                    logger.warning("QR kamera frame okunamadı, kamera yeniden açılıyor")
+                    if qr_camera is not None:
+                        try:
+                            qr_camera.release()
+                        except:
+                            pass
+                        qr_camera = None
+                    time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"QR kamera frame güncelleme hatası: {e}")
+                time.sleep(1)
+
+    except Exception as e:
+        logger.error(f"QR kamera thread hatası: {e}", exc_info=True)
+    finally:
+        # Thread sonlanırken kamerayı kapat
+        if qr_camera is not None:
+            try:
+                qr_camera.release()
+                logger.info("QR kamera kapatıldı (thread sonlandı)")
+            except:
+                pass
 
 def check_qr_mode_signal():
     """QR modu sinyalini kontrol et - sadece YENİ sinyalleri kabul et"""
@@ -301,6 +393,16 @@ def check_qr_mode_signal():
 
                     _last_qr_signal_time = signal_time
                     qr_mode_active = True
+
+                    # QR modu için kamera thread'ini başlat (web arayüzü olmadan da çalışsın)
+                    global _qr_camera_thread_started
+                    if not _qr_camera_thread_started:
+                        try:
+                            threading.Thread(target=qr_camera_frame_updater, daemon=True).start()
+                            _qr_camera_thread_started = True
+                            logger.info("✓ QR kamera thread'i başlatıldı")
+                        except Exception as e:
+                            logger.error(f"QR kamera thread'i başlatılamadı: {e}")
 
                 return True
 
