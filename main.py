@@ -271,6 +271,7 @@ def check_qr_mode_signal():
                     logger.debug(f"  Dosya sahibi: uid={file_stat.st_uid}, gid={file_stat.st_gid}")
                     logger.debug(f"  İzinler: {oct(file_stat.st_mode)}")
 
+
                     _last_qr_signal_time = signal_time
                     qr_mode_active = True
 
