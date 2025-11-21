@@ -887,6 +887,9 @@ def rename_session(session):
 
         LOG.info(f"Oturum yeniden adlandırıldı: {sess} → {new_name} (kullanıcı: {username})")
 
+        # Yeni oturum adıyla oturum detay sayfasına yönlendir
+        return redirect(url_for("records.list_session", session=new_name))
+
     except Exception as e:
         flash(f"Hata: {e}", "danger")
         LOG.error(f"Oturum yeniden adlandırma hatası: {e}")
