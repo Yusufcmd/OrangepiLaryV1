@@ -49,6 +49,13 @@
       <h1>{{ current_session }} — Kayıtlı Videolar</h1>
       <div class="crumbs">
         <a href="{{ url_for('records.list_records') }}">← Tüm Oturumlar</a>
+        <span style="margin-left:12px">|</span>
+        <form method="post" action="{{ url_for('records.rename_session', session=current_session) }}" style="display:inline-flex;gap:6px;align-items:center;margin-left:12px">
+          <label style="font-size:13px;color:#666">Oturum Adını Değiştir:</label>
+          <input class="input" type="text" name="new_session_name" placeholder="Yeni oturum adı" style="min-width:150px;padding:6px 8px">
+          {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+          <button class="btn btn-outline" type="submit" {% if active_session and current_session == active_session %}disabled title="Aktif oturumun adı değiştirilemez"{% endif %} style="padding:6px 10px;font-size:13px">Yeniden Adlandır</button>
+        </form>
       </div>
     {% else %}
       <h1>Kayıtlı Oturumlar</h1>
@@ -96,6 +103,11 @@
                   <td>
                     <div class="actions">
                       <a class="btn btn-outline" href="{{ url_for('records.list_session', session=s.name) }}">Görüntüle</a>
+                      <form method="post" action="{{ url_for('records.rename_session', session=s.name) }}" style="display:inline-flex;gap:6px;align-items:center">
+                        <input class="input" type="text" name="new_session_name" placeholder="Yeni oturum adı" style="min-width:150px">
+                        {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+                        <button class="btn btn-outline" type="submit" {% if active_session and s.name == active_session %}disabled title="Aktif oturumun adı değiştirilemez"{% endif %}>Yeniden Adlandır</button>
+                      </form>
                       <form method="post" action="{{ url_for('records.delete_session', session=s.name) }}" onsubmit="return confirm('Bu oturum ve içindeki tüm videolar silinecek. Emin misiniz?')" style="display:inline">
                         {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
                         <button class="btn btn-danger" type="submit" {% if active_session and s.name == active_session %}disabled title="Aktif oturum silinemez"{% endif %}>Oturumu Sil</button>

@@ -62,7 +62,7 @@ const uint8_t PIN_SENSE  = 5;    // GPIO5 (D1)
 const uint8_t RPI_PIN    = 14;   // D5 (Raspberry güç kontrol / HIGH=kes, LOW=çalış)
 const uint8_t RPIS_PIN   = 12;   // D6 (Raspberry shutdown sinyali / HIGH=normal)
 const uint8_t BatteryVal = A0;
-int shutdown_cooldown = 10;      // GRACE: 10 saniye
+int shutdown_cooldown = 20;      // GRACE: 10 saniye
 
 const uint8_t PIN_LED    = 2;    // LED çıkışı (AKTİF HIGH: HIGH=yanık, LOW=sönük)
 
@@ -189,13 +189,14 @@ float primeAndReadInitialSOC(uint8_t samples = NUM_READINGS, uint16_t settle_ms 
   socIndex = 0;
   g_socAvgLatest = avg;
 
-  // PWM'i ayarla
-  int duty = (int)((clampf(avg, 0.0f, 100.0f) / 100.0f) * 1000.0f + 0.5f);
+  // PWM'i ayarla - Maksimum %80 duty cycle ile sınırla
+  // %100 batarya -> %80 PWM duty (0-100 -> 0-80 ölçekleme)
+  int duty = (int)((clampf(avg, 0.0f, 100.0f) / 100.0f) * 800.0f + 0.5f);
   #if ACTIVE_LOW
     duty = 1000 - duty;
   #endif
   if (duty < 0) duty = 0;
-  if (duty > 1000) duty = 999;
+  if (duty > 800) duty = 800;  // Maksimum %80 (800/1000)
   analogWrite(PWM_PIN, duty);
 
   Serial.printf("[BOOT] Initial SOC(avg)=%.1f%%, duty=%d/1000\n", avg, duty);
@@ -215,19 +216,21 @@ void updateSocPwm() {
   socAvg /= (float)NUM_READINGS;
 
   socAvg = clampf(socAvg, 0.0f, 100.0f);
-  int duty = (int)((socAvg / 100.0f) * 1000.0f + 0.5f);
+  // Maksimum %80 duty cycle ile sınırla
+  // %100 batarya -> %80 PWM duty (0-100 -> 0-80 ölçekleme)
+  int duty = (int)((socAvg / 100.0f) * 800.0f + 0.5f);
 
   #if ACTIVE_LOW
     duty = 1000 - duty;
   #endif
 
   if (duty < 0) duty = 0;
-  if (duty > 1000) duty = 999;
+  if (duty > 800) duty = 800;  // Maksimum %80 (800/1000)
 
   analogWrite(PWM_PIN, duty);
   g_socAvgLatest = socAvg;
 
-  Serial.printf("ADC=%d | SOC(avg)=%.1f%% -> duty=%d/1000\n", adc, socAvg, duty);
+  Serial.printf("ADC=%d | SOC(avg)=%.1f%% -> duty=%d/1000 (max 80%%)\n", adc, socAvg, duty);
 }
 
 // ===================== LED DURUM MAKİNESİ =====================
@@ -285,6 +288,9 @@ void exitRecoveryLockdown() {
   ledMode = recordState ? LED_RECORD : LED_NORMAL;
   ledSet(true);
   ledTs = millis();
+
+  Serial.println("[RECOVERY-LOCK] Süre tamamlandı, otomatik GRACE kapatma başlatılıyor...");
+  beginShutdownGrace(USER_REQUEST);
 }
 
 // --- YENİ: LED Zamanlamaları ---
@@ -750,6 +756,11 @@ void evaluatePressSequence() {
       enterOtaMode();
     }
   }
+  else if (n == 7) {
+    // 7x → %50 duty, 10 sn recovery PWM
+    startRecoveryPwm(PWM_RANGE / 2, 10000);
+    Serial.println("[ACTION] 7x -> PIN_RECOVERY %50 duty, 10sn PWM gönderildi.");
+  }
   else if (n == 5) {
     // 5x → %25 duty, 5 sn recovery PWM
     if (!recoveryTriggered) startRecoveryPwm(PWM_RANGE / 4, 5000);
@@ -786,9 +797,6 @@ void setup() {
   Serial.println("LATCH HIGH: LDO açık.");
 
   // --- DÜZELTME: RPi pinlerini doğru başlangıç durumuyla yapılandır ---
-  // RPI_PIN'i doğrudan LOW (güç açık) olarak başlatarak kararsız güç döngüsünü engelle.
-  pinMode(RPI_PIN, OUTPUT);
-  digitalWrite(RPI_PIN, LOW);     // DOĞRU BAŞLANGIÇ: Güç kesintisiz olarak AÇIK.
 
   // RPIS_PIN (shutdown sinyali) normal çalışma durumu olan HIGH'da başlamalı.
   pinMode(RPIS_PIN, OUTPUT);
@@ -831,9 +839,11 @@ void setup() {
     // DİKKAT: return burada kalmalı ki RPi'ı başlatan kod çalışmasın.
     return;
   }
-
+    // RPI_PIN'i doğrudan LOW (güç açık) olarak başlatarak kararsız güç döngüsünü engelle.
+  pinMode(RPI_PIN, OUTPUT);
+  delay(200);
   Serial.println("Raspberry Pi başlatılıyor...");
-  digitalWrite(RPI_PIN, LOW);
+  digitalWrite(RPI_PIN, HIGH);
   delay(100);
   digitalWrite(RPIS_PIN, HIGH);
   delay(50);
@@ -1018,15 +1028,17 @@ void loop() {
     // AŞAMA 1: Pi'nin kapanmasını bekle (shutdown_cooldown sn)
     if (elapsed >= (uint32_t)shutdown_cooldown * 1000UL) {
 
-      // AŞAMA 2: Pi'nin gücünü kes ve 2 saniye bekle
-      digitalWrite(RPI_PIN, HIGH);
+      // AŞAMA 2: Pi'nin gücünü kes ve 5 saniye bekle
+
+      digitalWrite(RPI_PIN, LOW);
       Serial.println("Raspberry Pi gücü kesildi (RPI_PIN HIGH).");
-      delay(2000); // kritik bekleme
+      delay(5000); // kritik bekleme
+
 
       // AŞAMA 3: Karar anı - yeniden başlat mı, tamamen kapat mı?
       if (rebootRequested) {
         Serial.println("Yeniden başlatma isteği var. Pi'ye güç veriliyor...");
-        digitalWrite(RPI_PIN, LOW);
+        digitalWrite(RPI_PIN, HIGH);
         digitalWrite(RPIS_PIN, HIGH); // Sinyal pinini normale döndür.
 
         // Sistemi normal çalışma moduna döndür.

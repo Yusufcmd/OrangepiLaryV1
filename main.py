@@ -1124,7 +1124,7 @@ network={{
     subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"], capture_output=True)
 
 # ====================== Batarya / PWM (tek hat) Okuyucu ===================
-# ESP8266 D6 → Orange Pi PI3 (offset 259) PWM. Duty% → batt_value
+# ESP8266 D8 → Orange Pi PI3 (offset 259) PWM. Duty% → batt_value
 # ENV:
 #   BATT_PWM_LINE="/dev/gpiochip1:259"
 #   BATT_PWM_PRINT_SEC="0.5"       # raporlama penceresi/sn
@@ -1141,21 +1141,25 @@ def _set_batt_value(new_val: int):
     """0-100 clamp + basit hareketli ortalama + kullanıcı görünümü için dönüşüm.
 
     PWM okuma mantığı:
-    - PWM 100% olduğunda 99 olarak sınırla (100'de sıfır görünüyor)
+    - ESP8266 batarya %100 olduğunda %80 PWM duty gönderir (max 80%)
+    - %80 PWM -> %100 batarya olarak ölçeklendir (0-80 -> 0-100)
     - Gerçek batarya %15'i kullanıcıya %0 olarak göster
-    - 15-99 aralığını 0-99 aralığına ölçeklendir
+    - 15-100 aralığını 0-100 aralığına ölçeklendir
     """
     global batt_value
 
     # Önce 0-100 arası clamp yap
     v = max(0, min(100, int(new_val)))
 
-    # PWM 100% ise 99 yap (100'de okuma sıfır görünüyor)
-    if v >= 100:
-        v = 99
+    # PWM %80 ise bunu %100 batarya olarak kabul et (0-80 -> 0-100 ölçekleme)
+    # Formül: (değer / 80) * 100
+    if v > 80:
+        v = 80  # Maksimum %80 olarak sınırla
+    scaled_v = int(round((v / 80.0) * 100.0))
+    scaled_v = max(0, min(100, scaled_v))  # Tekrar clamp
 
     # Ham değeri kaydet
-    last_10_readings.append(v)
+    last_10_readings.append(scaled_v)
     raw_average = int(round(sum(last_10_readings) / len(last_10_readings)))
 
     # Kullanıcı görünümü için dönüşüm yap:

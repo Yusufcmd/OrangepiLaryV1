@@ -830,6 +830,79 @@ def delete_session(session):
     return redirect(url_for("records.list_records"))
 
 
+@records_bp.route("/<session>/rename_session", methods=["POST"])  # oturum ismini değiştirme
+@_login_required
+def rename_session(session):
+    """Bir oturumun adını değiştir"""
+    try:
+        sess = _safe_session(session)
+    except Exception:
+        flash("Geçersiz oturum.", "danger")
+        return redirect(url_for("records.list_records"))
+
+    new_name = request.form.get("new_session_name", "").strip()
+    username = globals().get('session', {}).get("user", "Unknown")
+
+    # Aktif oturum kontrolü - aktif oturumun adı değiştirilemez
+    if sess == SESSION_NAME:
+        flash("Aktif oturumun adı değiştirilemez.", "warning")
+        return redirect(url_for("records.list_records"))
+
+    if not new_name:
+        flash("Yeni oturum adı boş olamaz.", "warning")
+        return redirect(url_for("records.list_records"))
+
+    try:
+        # Yeni ismi güvenli hale getir
+        new_name = _safe_name(new_name)
+
+        # Kaynak ve hedef klasör yolları
+        src_path = os.path.join(RECORDS_DIR, sess)
+        dst_path = os.path.join(RECORDS_DIR, new_name)
+
+        # Kontroller
+        if not os.path.exists(src_path):
+            flash("Oturum bulunamadı.", "warning")
+            return redirect(url_for("records.list_records"))
+
+        if os.path.exists(dst_path):
+            flash("Bu isimde bir oturum zaten var.", "warning")
+            return redirect(url_for("records.list_records"))
+
+        # Oturum klasörünü yeniden adlandır
+        os.rename(src_path, dst_path)
+        flash(f"Oturum adı '{sess}' → '{new_name}' olarak değiştirildi.", "success")
+
+        # Loglama
+        if syslog:
+            try:
+                syslog.log_system_event("SESSION_RENAME",
+                                      f"Oturum adı değiştirildi: {sess} → {new_name}",
+                                      "INFO",
+                                      username=username,
+                                      old_name=sess,
+                                      new_name=new_name)
+            except Exception:
+                pass
+
+        LOG.info(f"Oturum yeniden adlandırıldı: {sess} → {new_name} (kullanıcı: {username})")
+
+    except Exception as e:
+        flash(f"Hata: {e}", "danger")
+        LOG.error(f"Oturum yeniden adlandırma hatası: {e}")
+        if syslog:
+            try:
+                syslog.log_system_event("SESSION_RENAME",
+                                      f"Oturum adı değiştirme hatası: {sess}",
+                                      "ERROR",
+                                      username=username,
+                                      error=str(e))
+            except Exception:
+                pass
+
+    return redirect(url_for("records.list_records"))
+
+
 @records_bp.route("/delete_all_sessions", methods=["POST"])  # tüm oturumları silme
 @_login_required
 def delete_all_sessions():
