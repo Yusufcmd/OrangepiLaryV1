@@ -1432,11 +1432,17 @@ def init_camera():
     if camera is not None and camera.isOpened():
         camera.release()
     camera = None
+
+    # OpenCV log seviyesini geçici olarak kapat (kamera bulunamadı uyarılarını önlemek için)
+    old_log_level = cv2.utils.logging.getLogLevel()
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+
     for idx in range(3):
         try:
             # Her denemeden önce QR modunu kontrol et
             if qr_mode_active:
                 logger.info("QR modu aktif oldu - kamera açma iptal edildi")
+                cv2.utils.logging.setLogLevel(old_log_level)
                 return False
 
             cam = cv2.VideoCapture(idx)
@@ -1445,11 +1451,14 @@ def init_camera():
                 if ok and frame is not None and frame.size > 0:
                     cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     camera = cam
+                    cv2.utils.logging.setLogLevel(old_log_level)
                     logger.info(f"Kamera {idx} bağlandı.")
                     return True
                 cam.release()
         except Exception as e:
             logger.error(f"Kamera {idx} açma hatası: {e}")
+
+    cv2.utils.logging.setLogLevel(old_log_level)
     logger.warning("Kamera bulunamadı.")
     return False
 
@@ -1492,6 +1501,11 @@ def background_camera_updater():
                             # Kamera yoksa başlat
                             if camera is None or not camera.isOpened():
                                 logger.info("Arka plan thread: Kamera başlatılıyor...")
+
+                                # OpenCV log seviyesini geçici olarak kapat
+                                old_log_level = cv2.utils.logging.getLogLevel()
+                                cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+
                                 for idx in range(3):
                                     try:
                                         cam = cv2.VideoCapture(idx)
@@ -1505,6 +1519,9 @@ def background_camera_updater():
                                             cam.release()
                                     except Exception as e:
                                         logger.error(f"Arka plan thread: Kamera {idx} açma hatası: {e}")
+
+                                # Log seviyesini geri yükle
+                                cv2.utils.logging.setLogLevel(old_log_level)
 
                 # Hala kamera yoksa bekle ve devam et
                 if camera is None or not camera.isOpened():
