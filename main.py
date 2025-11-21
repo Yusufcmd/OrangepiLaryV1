@@ -129,8 +129,6 @@ except Exception:
 GPIO = None
 _backend = None
 _import_errors = []
-led_pin = None
-ready_led_pin = None  # Pin 258 için sistem hazır LED'i
 
 USE_GPIOD = False
 try:
@@ -147,7 +145,7 @@ prefer = (os.environ.get("GPIO_BACKEND", "") or "").lower()
 
 def _try_import_gpio():
     """GPIO alternatif backend (gerekirse)."""
-    global GPIO, _backend, led_pin
+    global GPIO, _backend
     if prefer in ("", "safe_gpio"):
         try:
             from safe_gpio import GPIO as _G
@@ -182,21 +180,6 @@ def _try_import_gpio():
     except Exception as e:
         logger.warning(f"GPIO setmode hatası: {e}")
 
-    try:
-        led_pin = int(os.environ.get("LED_PIN", "31"))  # BOARD 31 (PI15)
-        GPIO.setup(led_pin, GPIO.OUT, initial=GPIO.LOW)
-    except Exception as e:
-        logger.warning(f"LED pin init başarısız: {e}")
-        led_pin = None
-
-    # Pin 258 için sistem hazır LED'i
-    try:
-        ready_led_pin = 258
-        GPIO.setup(ready_led_pin, GPIO.OUT, initial=GPIO.HIGH)  # LED direkt yansın
-        logger.info(f"Sistem hazır LED pin {ready_led_pin} başlatıldı ve HIGH yapıldı")
-    except Exception as e:
-        logger.warning(f"Sistem hazır LED pin init başarısız: {e}")
-        ready_led_pin = None
 
 _try_import_gpio()
 
@@ -2653,13 +2636,6 @@ if __name__ == "__main__":
             except Exception as _e:
                 logger.error(f"mDNS broadcast başlatılamadı: {_e}")
 
-        # Sistem hazır - Pin 258 LED'ini yak
-        if GPIO is not None and ready_led_pin is not None:
-            try:
-                GPIO.output(ready_led_pin, GPIO.HIGH)
-                logger.info(f"Sistem hazır! Pin {ready_led_pin} HIGH yapıldı (LED yanıyor)")
-            except Exception as e:
-                logger.error(f"Pin {ready_led_pin} HIGH yapılamadı: {e}")
 
         port = int(os.environ.get("PORT", "7447"))
         logger.info(f"Uygulama: http://0.0.0.0:{port}")

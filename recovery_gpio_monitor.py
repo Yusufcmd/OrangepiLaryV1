@@ -116,7 +116,11 @@ AP7_MODE_SCRIPT = "/opt/lscope/bin/ap7_mode.sh"  # %50 duty için tetiklenecek s
 # LED kontrolü (PI2 pini)
 GPIO_LED_CHIP = "/dev/gpiochip1"
 GPIO_LED_OFFSET = 258  # PI2 pini
-LED_BLINK_INTERVAL = 0.3
+
+# LED yanıp sönme desenleri (saniye cinsinden)
+LED_BLINK_QR_MODE = 0.2      # QR modu: hızlı yanıp sönme (0.2s aç, 0.2s kapa)
+LED_BLINK_RECOVERY = 0.5     # Recovery modu: orta hızda (0.5s aç, 0.5s kapa)
+LED_BLINK_AP7_MODE = 1.0     # AP7 modu: yavaş yanıp sönme (1.0s aç, 1.0s kapa)
 
 # ==================== KAMERA SİNYAL FONKSİYONLARI ====================
 def signal_qr_mode_start():
@@ -383,6 +387,7 @@ _led_line: Optional[object] = None
 _led_chip: Optional[object] = None
 _led_blink_stop = threading.Event()
 _led_blink_thread: Optional[threading.Thread] = None
+_led_blink_interval = 0.5  # Varsayılan yanıp sönme aralığı
 
 def setup_led_gpio():
     """LED GPIO'sunu hazırla"""
@@ -428,34 +433,46 @@ def cleanup_led_gpio():
     except Exception as e:
         logger.debug(f"LED chip cleanup hatası: {e}")
 
-def led_blink_loop():
-    """LED yanıp sönme döngüsü"""
+def led_blink_loop(interval):
+    """LED yanıp sönme döngüsü - belirtilen aralıkta"""
     while not _led_blink_stop.is_set():
         set_led(True)
-        time.sleep(LED_BLINK_INTERVAL)
+        time.sleep(interval)
         if _led_blink_stop.is_set():
             break
         set_led(False)
-        time.sleep(LED_BLINK_INTERVAL)
+        time.sleep(interval)
+    # Döngü sonunda LED'i kapat
     set_led(False)
 
-def start_led_blink():
-    """LED yanıp sönmeyi başlat"""
-    global _led_blink_thread, _led_blink_stop
-    _led_blink_stop.clear()
-    _led_blink_thread = threading.Thread(target=led_blink_loop, daemon=True)
-    _led_blink_thread.start()
-    logger.debug("LED yanıp sönme başladı")
+def start_led_blink(interval=0.5, mode_name=""):
+    """LED yanıp sönmeyi belirtilen aralıkta başlat"""
+    global _led_blink_thread, _led_blink_stop, _led_blink_interval
 
-def stop_led_blink():
+    # Eğer zaten yanıp sönme aktifse, önce durdur
+    stop_led_blink(keep_off=True)
+
+    _led_blink_interval = interval
+    _led_blink_stop.clear()
+    _led_blink_thread = threading.Thread(target=led_blink_loop, args=(interval,), daemon=True)
+    _led_blink_thread.start()
+    logger.debug(f"LED yanıp sönme başladı ({mode_name}, interval={interval}s)")
+
+def stop_led_blink(keep_off=False):
     """LED yanıp sönmeyi durdur ve sürekli yanma moduna geç"""
-    global _led_blink_stop
+    global _led_blink_stop, _led_blink_thread
     _led_blink_stop.set()
     if _led_blink_thread:
-        _led_blink_thread.join(timeout=1.0)
-    # LED'i tekrar sürekli yanık duruma getir
-    set_led(True)
-    logger.debug("LED yanıp sönme durduruldu - sürekli yanma moduna geçildi")
+        _led_blink_thread.join(timeout=2.0)
+        _led_blink_thread = None
+
+    # LED'i tekrar sürekli yanık duruma getir (keep_off False ise)
+    if not keep_off:
+        set_led(True)
+        logger.debug("LED yanıp sönme durduruldu - sürekli yanma moduna geçildi")
+    else:
+        set_led(False)
+        logger.debug("LED yanıp sönme durduruldu - LED kapatıldı")
 
 # ==================== PWM ÖLÇÜMÜ ====================
 def measure_pwm_duty_cycle(line, sample_count=PWM_SAMPLE_COUNT):
@@ -499,7 +516,8 @@ def trigger_recovery():
     logger.info("RECOVERY MODU TETIKLENDI - AP MODUNA GEÇİLECEK!")
     logger.info("="*60)
 
-    start_led_blink()
+    # Recovery modu için orta hızda yanıp sönme (0.5s aç, 0.5s kapa)
+    start_led_blink(LED_BLINK_RECOVERY, "Recovery Modu")
 
     try:
         if not os.path.exists(FACTORYCTL_BIN):
@@ -535,6 +553,7 @@ def trigger_recovery():
             if result.stdout:
                 logger.debug(f"factoryctl çıktısı:\n{result.stdout}")
 
+            # Recovery tamamlandı - LED sürekli yanmaya devam etsin
             stop_led_blink()
 
             # Recovery başarılı - Sistem yeniden başlatılıyor
@@ -570,7 +589,8 @@ def trigger_qr_mode():
     logger.info("QR OKUMA MODU TETIKLENDI")
     logger.info("="*60)
 
-    start_led_blink()
+    # QR modu için hızlı yanıp sönme (0.2s aç, 0.2s kapa)
+    start_led_blink(LED_BLINK_QR_MODE, "QR Modu")
 
     try:
         # main.py'ye QR modu sinyali gönder
@@ -581,6 +601,9 @@ def trigger_qr_mode():
 
         # Sinyal 60 saniye boyunca aktif kalacak (main.py işlemi tamamlayana kadar)
         # main.py işini bitirince sinyali temizleyecek
+
+        # QR modu tamamlandıktan sonra LED sürekli yanmaya devam etsin
+        # Ana döngüde sürekli izlenecek, mod bitince otomatik olarak stop_led_blink() çağrılacak
 
         return True
 
@@ -605,8 +628,8 @@ def request_input(chip, offset):
     try:
         line.request(consumer="pwm-monitor", type=gpiod.LINE_REQ_DIR_IN)
         return line
-    except OSError as e:
-        if e.errno == 16:  # Device or resource busy
+    except OSError as os_error:
+        if os_error.errno == 16:  # Device or resource busy
             logger.warning(f"GPIO {offset} meşgul, serbest bırakılmaya çalışılıyor...")
             try:
                 # Pin zaten başka bir consumer tarafından kullanılıyor
@@ -667,7 +690,7 @@ def request_input(chip, offset):
 
                 raise OSError(f"GPIO {offset} meşgul ve serbest bırakılamıyor. "
                             f"Lütfen GPIO kullanan diğer işlemleri durdurun veya "
-                            f"sistemi yeniden başlatın.") from e
+                            f"sistemi yeniden başlatın.") from os_error
         else:
             raise
 
@@ -722,9 +745,20 @@ def main():
     AP7_COOLDOWN = 60  # saniye
     AP7_TOLERANCE = 3  # %50 için ±3% tolerans
 
+    # Mod durumları - LED kontrolü için
+    qr_mode_active = False
+    ap7_mode_active = False
+    recovery_mode_active = False
+
     try:
         while not stop_flag:
             try:
+                # QR modunun bitip bitmediğini kontrol et
+                if qr_mode_active and not os.path.exists(CAMERA_SIGNAL_FILE):
+                    logger.info("QR modu tamamlandı - LED sürekli yanma moduna geçiyor")
+                    stop_led_blink()
+                    qr_mode_active = False
+
                 # PWM duty cycle ölç
                 duty = measure_pwm_duty_cycle(line, PWM_SAMPLE_COUNT)
 
@@ -743,6 +777,11 @@ def main():
                         if (current_time - last_ap7_trigger_time) >= AP7_COOLDOWN:
                             if os.path.exists(AP7_MODE_SCRIPT):
                                 logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → AP7 MODE tetikleniyor")
+
+                                # AP7 modu için yavaş yanıp sönme (1.0s aç, 1.0s kapa)
+                                start_led_blink(LED_BLINK_AP7_MODE, "AP7 Modu")
+                                ap7_mode_active = True
+
                                 try:
                                     # /opt noexec olsa bile çalışsın: bash ile çağır
                                     res = subprocess.run(["sudo", "bash", AP7_MODE_SCRIPT],
@@ -750,16 +789,25 @@ def main():
                                                        stdin=subprocess.DEVNULL)
                                     last_ap7_trigger_time = time.time()
                                     last_trigger_time = last_ap7_trigger_time  # genel cooldown'u da başlat
+
+                                    # AP7 modu tamamlandı - LED sürekli yanma moduna geç
+                                    stop_led_blink()
+                                    ap7_mode_active = False
+
                                     if res.returncode == 0:
-                                        logger.info("✓ ap7_mode.sh başarıyla çalıştı")
+                                        logger.info("✓ ap7_mode.sh başarıyla çalıştı - LED sürekli yanma modunda")
                                         if res.stdout:
                                             logger.debug(f"ap7 stdout:\n{res.stdout}")
                                     else:
                                         logger.error(f"✗ ap7_mode.sh hata: {res.stderr or res.stdout}")
                                 except subprocess.TimeoutExpired:
                                     logger.error("ap7_mode.sh zaman aşımı")
+                                    stop_led_blink()
+                                    ap7_mode_active = False
                                 except Exception as e:
                                     logger.error(f"ap7_mode.sh çağrı hatası: {e}")
+                                    stop_led_blink()
+                                    ap7_mode_active = False
                             else:
                                 logger.error(f"ap7_mode.sh bulunamadı: {AP7_MODE_SCRIPT}")
                         else:
@@ -770,8 +818,11 @@ def main():
                     # Recovery modu kontrolü (%75)
                     elif is_duty_in_range(duty, DUTY_RECOVERY, PWM_TOLERANCE):
                         logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → RECOVERY MODU")
+                        recovery_mode_active = True
                         success = trigger_recovery()
                         last_trigger_time = time.time()
+                        # Recovery tamamlandıktan sonra LED sürekli yanacak (trigger_recovery içinde yapılıyor)
+                        recovery_mode_active = False
                         if success:
                             logger.info("Recovery modu başarıyla tamamlandı")
                         else:
@@ -780,15 +831,24 @@ def main():
                     # QR okuma modu kontrolü (%25)
                     elif is_duty_in_range(duty, DUTY_QR_MODE, PWM_TOLERANCE):
                         logger.warning(f"[{time.strftime('%H:%M:%S')}] ✓ PWM: {duty:.1f}% → QR OKUMA MODU")
+                        qr_mode_active = True
                         success = trigger_qr_mode()
                         last_trigger_time = time.time()
                         if success:
-                            logger.info("QR okuma modu başarıyla tamamlandı")
+                            logger.info("QR okuma modu sinyali gönderildi")
+                            # QR modu bitince LED sürekli yanacak (yukarıda kontrol ediliyor)
                         else:
                             logger.error("QR okuma modu başarısız oldu")
+                            qr_mode_active = False
+                            stop_led_blink()
 
                     else:
-                        # Normal durum
+                        # Normal durum - Modlar aktif değilse LED sürekli yanık olmalı
+                        if not qr_mode_active and not ap7_mode_active and not recovery_mode_active:
+                            # LED'in yanıp sönme durumunu kontrol et
+                            if _led_blink_thread and _led_blink_thread.is_alive():
+                                # LED yanıp sönüyorsa durdur ve sürekli yan
+                                stop_led_blink()
                         logger.info(f"[{time.strftime('%H:%M:%S')}] Duty: {duty:.1f}%")
                 else:
                     logger.warning(f"[{time.strftime('%H:%M:%S')}] PWM okunamadı")
