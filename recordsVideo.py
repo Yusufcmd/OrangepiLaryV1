@@ -569,14 +569,23 @@ def _safe_name(name: str) -> str:
 
 
 def _safe_session(name: str) -> str:
-    """Yalnızca 'oturum123' gibi klasörleri kabul et ve varlığını doğrula."""
+    """Oturum klasörünün varlığını ve güvenliğini doğrula."""
     name = (name or "").strip()
-    pat = re.compile(rf"^{re.escape(SESSION_PREFIX)}\d{{1,6}}$")
-    if not pat.fullmatch(name):
+
+    # Güvenlik kontrolü: path traversal saldırılarını önle
+    # Sadece alfasayısal, tire, alt çizgi ve boşluk karakterlerine izin ver
+    if not re.fullmatch(r"[\w\-\. ]{1,128}", name):
+        raise ValueError("Geçersiz oturum adı")
+
+    # Path traversal kontrolü
+    if ".." in name or "/" in name or "\\" in name:
         raise ValueError("Geçersiz oturum")
+
+    # Klasörün varlığını kontrol et
     path = os.path.join(RECORDS_DIR, name)
     if not os.path.isdir(path):
         raise FileNotFoundError("Oturum bulunamadı")
+
     return name
 
 
