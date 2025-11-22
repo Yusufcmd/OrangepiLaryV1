@@ -4,8 +4,11 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import CSRFProtect
 # from werkzeug.security import check_password_hash  # Hash kullanılmıyor (projeyle uyum için düz metin)
-import subprocess, shlex, os, pathlib, sys, tempfile, shutil, errno
+import subprocess, shlex, os, pathlib, sys, tempfile, shutil, errno, logging
 from typing import Union, List, Tuple
+
+# Logger oluştur
+logger = logging.getLogger(__name__)
 
 # Merkezi loglama sistemi
 try:
@@ -547,7 +550,6 @@ def write_ap_band_channel(band: str, channel: int) -> tuple[bool, str]:
         if os.path.exists(path):
             # Dosya varsa sudo ile geçici konuma kopyala ve oku
             try:
-                import subprocess
                 subprocess.run(
                     ["sudo", "-n", "cp", path, temp_path],
                     capture_output=True,
@@ -624,7 +626,6 @@ def write_ap_password(new_password: str) -> tuple[bool, str]:
         if os.path.exists(path):
             # Dosya varsa sudo ile geçici konuma kopyala ve oku
             try:
-                import subprocess
                 subprocess.run(
                     ["sudo", "-n", "cp", path, temp_path],
                     capture_output=True,
@@ -685,15 +686,6 @@ def write_ap_password(new_password: str) -> tuple[bool, str]:
 
         if not ok:
             hint = (
-                "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
-                "veya aşağıdaki sudoers kuralını ekleyin: \n"
-                "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"
-                "Ardından web servisini yeniden başlatın."
-            )
-            return False, f"hostapd yazılamadı ({path}): {emsg}. {hint}"
-        return True, "Wi-Fi şifresi güncellendi"
-    except Exception as e:
-        return False, f"Beklenmeyen hata: {e}"
                 "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
                 "veya aşağıdaki sudoers kuralını ekleyin: \n"
                 "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"
