@@ -12,7 +12,7 @@ except Exception as e:
 # ---------- SABİTLER (gerekirse düzenleyin) ----------
 # BUTON (uzun basış kapatma)
 BTN_GPIOCHIP   = "/dev/gpiochip1"
-BTN_OFFSET     = 269            # alternatif: 263
+BTN_OFFSET     = 272            # alternatif: 272
 BTN_ACTIVE_LOW = True           # buton GND'ye çekiliyorsa True
 
 LONG_PRESS_SEC = 2.0            # 2 saniye uzun basışta kapanış
