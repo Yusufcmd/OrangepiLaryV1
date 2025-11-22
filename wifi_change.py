@@ -539,11 +539,36 @@ def write_ap_band_channel(band: str, channel: int) -> tuple[bool, str]:
         return False, f"5 GHz için geçersiz kanal: {channel}"
 
     path = hostapd_conf_path()
+    temp_path = "/tmp/hostapd_temp.conf"
+
     try:
-        if not os.path.exists(path):
+        # Mevcut dosyayı oku veya yeni içerik oluştur
+        existing = []
+        if os.path.exists(path):
+            # Dosya varsa sudo ile geçici konuma kopyala ve oku
+            try:
+                import subprocess
+                subprocess.run(
+                    ["sudo", "-n", "cp", path, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    stdin=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    ["sudo", "-n", "chmod", "666", temp_path],
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=5
+                )
+                with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
+                    existing = f.readlines()
+            except Exception as e:
+                logger.warning(f"Mevcut hostapd.conf okunamadı: {e}")
+
+        if not existing:
             # Basit bir başlangıç içeriği oluştur
-            pathlib.Path(os.path.dirname(path) or "/etc/hostapd").mkdir(parents=True, exist_ok=True)
-            base = [
+            existing = [
                 "interface=wlan0\n",
                 "driver=nl80211\n",
                 "ssid=OrangePiAP\n",
@@ -551,17 +576,24 @@ def write_ap_band_channel(band: str, channel: int) -> tuple[bool, str]:
                 "wpa=2\n",
                 "wpa_passphrase=simclever123\n",
             ]
-            existing = base
-        else:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                existing = f.readlines()
 
         out_lines = _build_hostapd_updated_lines(existing, band, channel)
         out_text = "".join(out_lines)
-        # Yazmayı atomik ve yetki dostu yap
-        ok, emsg = _atomic_write_with_sudo_fallback(path, out_text)
+
+        # Geçici dosyaya yaz
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(out_text)
+
+        # sudo ile hedef konuma kopyala
+        ok, emsg = _sudo_install_file(temp_path, path, mode="644")
+
+        # Geçici dosyayı temizle
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+
         if not ok:
-            # Kullanıcıya yol gösteren daha açıklayıcı mesaj
             hint = (
                 "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
                 "veya aşağıdaki sudoers kuralını ekleyin: \n"
@@ -584,11 +616,36 @@ def write_ap_password(new_password: str) -> tuple[bool, str]:
         return False, "Şifre en fazla 63 karakter olabilir"
 
     path = hostapd_conf_path()
+    temp_path = "/tmp/hostapd_temp.conf"
+
     try:
-        if not os.path.exists(path):
+        # Mevcut dosyayı oku veya yeni içerik oluştur
+        existing = []
+        if os.path.exists(path):
+            # Dosya varsa sudo ile geçici konuma kopyala ve oku
+            try:
+                import subprocess
+                subprocess.run(
+                    ["sudo", "-n", "cp", path, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    stdin=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    ["sudo", "-n", "chmod", "666", temp_path],
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=5
+                )
+                with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
+                    existing = f.readlines()
+            except Exception as e:
+                logger.warning(f"Mevcut hostapd.conf okunamadı: {e}")
+
+        if not existing:
             # Basit bir başlangıç içeriği oluştur
-            pathlib.Path(os.path.dirname(path) or "/etc/hostapd").mkdir(parents=True, exist_ok=True)
-            base = [
+            existing = [
                 "interface=wlan0\n",
                 "driver=nl80211\n",
                 "ssid=OrangePiAP\n",
@@ -596,10 +653,6 @@ def write_ap_password(new_password: str) -> tuple[bool, str]:
                 "wpa=2\n",
                 f"wpa_passphrase={new_password}\n",
             ]
-            existing = base
-        else:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                existing = f.readlines()
 
         # Şifreyi güncelle
         out = []
@@ -616,9 +669,31 @@ def write_ap_password(new_password: str) -> tuple[bool, str]:
             out.append(f"wpa_passphrase={new_password}\n")
 
         out_text = "".join(out)
-        ok, emsg = _atomic_write_with_sudo_fallback(path, out_text)
+
+        # Geçici dosyaya yaz
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(out_text)
+
+        # sudo ile hedef konuma kopyala
+        ok, emsg = _sudo_install_file(temp_path, path, mode="644")
+
+        # Geçici dosyayı temizle
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+
         if not ok:
             hint = (
+                "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
+                "veya aşağıdaki sudoers kuralını ekleyin: \n"
+                "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"
+                "Ardından web servisini yeniden başlatın."
+            )
+            return False, f"hostapd yazılamadı ({path}): {emsg}. {hint}"
+        return True, "Wi-Fi şifresi güncellendi"
+    except Exception as e:
+        return False, f"Beklenmeyen hata: {e}"
                 "hostapd yazılamadı. Bu paneli root olarak çalıştırın (systemd servisi ile) "
                 "veya aşağıdaki sudoers kuralını ekleyin: \n"
                 "  echo 'www-data ALL=(root) NOPASSWD:/usr/bin/install, /bin/systemctl' | sudo tee /etc/sudoers.d/clary-wifi\n"

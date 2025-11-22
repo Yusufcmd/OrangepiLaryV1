@@ -938,10 +938,35 @@ def write_ap_band_channel(band: str, channel: int) -> Tuple[bool, str]:
         return False, f"5 GHz için geçersiz kanal: {channel}"
 
     path = hostapd_conf_path()
+    temp_path = "/tmp/hostapd_temp.conf"
+
     try:
-        if not os.path.exists(path):
+        # Mevcut dosyayı oku veya yeni içerik oluştur
+        lines = []
+        if os.path.exists(path):
+            # Dosya varsa sudo ile geçici konuma kopyala ve oku
+            try:
+                subprocess.run(
+                    ["sudo", "-n", "cp", path, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    stdin=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    ["sudo", "-n", "chmod", "666", temp_path],
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=5
+                )
+                with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                logger.warning(f"Mevcut hostapd.conf okunamadı: {e}")
+
+        if not lines:
             # Basit bir başlangıç içeriği oluştur
-            base = [
+            lines = [
                 "interface=wlan0\n",
                 "driver=nl80211\n",
                 "ssid=OrangePiAP\n",
@@ -949,33 +974,49 @@ def write_ap_band_channel(band: str, channel: int) -> Tuple[bool, str]:
                 "wpa=2\n",
                 "wpa_passphrase=simclever123\n",
             ]
-            with open(path, "w", encoding="utf-8") as f:
-                f.writelines(base)
-        # Dosyayı oku ve satır bazlı güncelle
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
+
+        # Dosyayı satır bazlı güncelle
         out = []
-        saw_mode = False; saw_chan = False
+        saw_mode = False
+        saw_chan = False
         for l in lines:
             ls = l.strip()
             if ls.startswith("hw_mode="):
-                out.append(f"hw_mode={'a' if band=='5' else 'g'}\n"); saw_mode = True
+                out.append(f"hw_mode={'a' if band=='5' else 'g'}\n")
+                saw_mode = True
             elif ls.startswith("channel="):
-                out.append(f"channel={channel}\n"); saw_chan = True
+                out.append(f"channel={channel}\n")
+                saw_chan = True
             else:
                 out.append(l)
+
         if not saw_mode:
             out.append(f"hw_mode={'a' if band=='5' else 'g'}\n")
         if not saw_chan:
             out.append(f"channel={channel}\n")
-        # Yedek al ve yaz
+
+        # Geçici dosyaya yaz
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.writelines(out)
+
+        # sudo ile hedef konuma kopyala
+        copy_result = subprocess.run(
+            ["sudo", "-n", "cp", temp_path, path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL
+        )
+
+        if copy_result.returncode != 0:
+            return False, f"hostapd.conf kopyalanamadı: {copy_result.stderr}"
+
+        # Geçici dosyayı temizle
         try:
-            import shutil
-            shutil.copy2(path, path + ".bak")
+            os.remove(temp_path)
         except Exception:
             pass
-        with open(path, "w", encoding="utf-8") as f:
-            f.writelines(out)
+
         return True, f"AP ayarları güncellendi: band={band} channel={channel}"
     except Exception as e:
         return False, f"hostapd yazılamadı ({path}): {e}"
@@ -991,10 +1032,35 @@ def write_ap_password(new_password: str) -> Tuple[bool, str]:
         return False, "Şifre en fazla 63 karakter olabilir"
 
     path = hostapd_conf_path()
+    temp_path = "/tmp/hostapd_temp.conf"
+
     try:
-        if not os.path.exists(path):
+        # Mevcut dosyayı oku veya yeni içerik oluştur
+        lines = []
+        if os.path.exists(path):
+            # Dosya varsa sudo ile geçici konuma kopyala ve oku
+            try:
+                subprocess.run(
+                    ["sudo", "-n", "cp", path, temp_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    stdin=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    ["sudo", "-n", "chmod", "666", temp_path],
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=5
+                )
+                with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+            except Exception as e:
+                logger.warning(f"Mevcut hostapd.conf okunamadı: {e}")
+
+        if not lines:
             # Basit bir başlangıç içeriği oluştur
-            base = [
+            lines = [
                 "interface=wlan0\n",
                 "driver=nl80211\n",
                 "ssid=OrangePiAP\n",
@@ -1002,33 +1068,42 @@ def write_ap_password(new_password: str) -> Tuple[bool, str]:
                 "wpa=2\n",
                 f"wpa_passphrase={new_password}\n",
             ]
-            with open(path, "w", encoding="utf-8") as f:
-                f.writelines(base)
-        else:
-            # Dosyayı oku ve şifreyi güncelle
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-            out = []
-            saw_pass = False
-            for line in lines:
-                ls = line.strip()
-                if ls.startswith("wpa_passphrase="):
-                    out.append(f"wpa_passphrase={new_password}\n")
-                    saw_pass = True
-                else:
-                    out.append(line)
 
-            if not saw_pass:
+        # Dosyayı satır bazlı güncelle
+        out = []
+        saw_pass = False
+        for line in lines:
+            ls = line.strip()
+            if ls.startswith("wpa_passphrase="):
                 out.append(f"wpa_passphrase={new_password}\n")
+                saw_pass = True
+            else:
+                out.append(line)
 
-            # Yedek al ve yaz
-            try:
-                import shutil
-                shutil.copy2(path, path + ".bak")
-            except Exception:
-                pass
-            with open(path, "w", encoding="utf-8") as f:
-                f.writelines(out)
+        if not saw_pass:
+            out.append(f"wpa_passphrase={new_password}\n")
+
+        # Geçici dosyaya yaz
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.writelines(out)
+
+        # sudo ile hedef konuma kopyala
+        copy_result = subprocess.run(
+            ["sudo", "-n", "cp", temp_path, path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL
+        )
+
+        if copy_result.returncode != 0:
+            return False, f"hostapd.conf kopyalanamadı: {copy_result.stderr}"
+
+        # Geçici dosyayı temizle
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
 
         return True, "Wi-Fi şifresi güncellendi"
     except Exception as e:
