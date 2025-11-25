@@ -2730,13 +2730,15 @@ if __name__ == "__main__":
             logger.error("gpiod yok veya BATT_PWM_LINE tanımsız — PWM okuyucu başlatılamadı.")
 
         # Shutdown watcher'ı başlat
-        try:
-            if USE_GPIOD and SHUTDOWN_GPIO_LINE:
-                threading.Thread(target=gpio_shutdown_watcher, daemon=True).start()
-            else:
-                logger.warning("Shutdown watcher devre dışı (gpiod yok veya SHUTDOWN_GPIO_LINE tanımsız)")
-        except Exception as _e:
-            logger.error(f"gpio_shutdown_watcher başlatılamadı: {_e}")
+        # NOT: shutdown_button.py servisi kullanıldığı için devre dışı bırakıldı (GPIO 272 çakışması önlendi)
+        # try:
+        #     if USE_GPIOD and SHUTDOWN_GPIO_LINE:
+        #         threading.Thread(target=gpio_shutdown_watcher, daemon=True).start()
+        #     else:
+        #         logger.warning("Shutdown watcher devre dışı (gpiod yok veya SHUTDOWN_GPIO_LINE tanımsız)")
+        # except Exception as _e:
+        #     logger.error(f"gpio_shutdown_watcher başlatılamadı: {_e}")
+        logger.info("Shutdown watcher devre dışı - shutdown_button.py servisi kullanılıyor")
 
         # Kayıt modülü arkaplan servislerini başlat
         try:
